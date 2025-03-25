@@ -7,12 +7,12 @@ namespace MVI
         where TState : IState, new()
         where TIntent : IIntent
     {
-        protected readonly Store<TState, TIntent> Store;
+        protected Store<TState, TIntent> Store { get; private set; }
         private readonly CompositeDisposable _disposables = new();
 
-        protected MviViewModel()
+        public void BindStore(Store<TState, TIntent> store)
         {
-            Store = new Store<TState, TIntent>(new TState());
+            Store = store;
             // 使用 ObserveOnMainThread 确保 UI 线程更新
             Store.State
                 .ObserveOnMainThread()
@@ -20,26 +20,32 @@ namespace MVI
                 .AddTo(_disposables);
         }
 
-        protected virtual void OnStateChanged(TState state)
+        protected virtual void OnStateChanged(TState? state)
         {
-            // 自动映射状态到 ViewModel 属性（带脏检查优化）
-            var vmType = GetType();
-            var stateType = typeof(TState);
-
-            foreach (var prop in vmType.GetProperties())
+            if (state is null)
             {
-                if (!prop.CanWrite) continue;
+                return;
+            }
+            var vmType = GetType();
+            var stateType = state.GetType();
+            var stateProps = stateType.GetProperties();
 
-                var stateProp = stateType.GetProperty(prop.Name);
+            foreach (var stateProp in stateProps)
+            {
                 if (stateProp?.CanRead != true) continue;
 
-                var newValue = stateProp.GetValue(state);
-                var currentValue = prop.GetValue(this);
+                var vmProp = vmType.GetProperty(stateProp.Name);
 
+                if (vmProp == null) continue;
+                if (!vmProp.CanWrite) continue;
+
+                var newValue = stateProp.GetValue(state);
+                var currentValue = vmProp.GetValue(this);
                 if (!Equals(currentValue, newValue))
                 {
-                    prop.SetValue(this, newValue);
+                    vmProp.SetValue(this, newValue);
                 }
+
             }
         }
 

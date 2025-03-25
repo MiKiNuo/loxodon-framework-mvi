@@ -6,11 +6,11 @@ using R3;
 
 namespace MVI
 {
-    public class Store<TState, TIntent> : IDisposable
+    public abstract class Store<TState, TIntent> : IDisposable
         where TState : IState
         where TIntent : IIntent
     {
-        private readonly BehaviorSubject<TState> _stateSubject;
+        private readonly Subject<TState> _stateSubject = new();
         private readonly Subject<TIntent> _intentSubject = new();
         private readonly CompositeDisposable _disposables = new();
         private TState _currentState;
@@ -18,11 +18,9 @@ namespace MVI
         public TState CurrentState => _currentState;
         public ReadOnlyReactiveProperty<TState> State { get; }
 
-        public Store(TState initialState)
+        protected Store()
         {
-            _currentState = initialState;
-            _stateSubject = new BehaviorSubject<TState>(initialState);
-            State = _stateSubject.ToReadOnlyReactiveProperty(initialState);
+            State = _stateSubject!.ToReadOnlyReactiveProperty();
             Process(_intentSubject);
         }
 
@@ -55,6 +53,11 @@ namespace MVI
         private void Reduce(IMviResult result)
         {
             var newState = Reducer(result);
+            if (newState is null)
+            {
+                return;
+            }
+
             if (EqualityComparer<TState>.Default.Equals(_currentState, newState))
                 return;
 
@@ -64,7 +67,7 @@ namespace MVI
 
         protected virtual TState Reducer(IMviResult result)
         {
-            return CurrentState;
+            return default;
         }
 
 
