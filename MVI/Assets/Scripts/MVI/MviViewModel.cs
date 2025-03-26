@@ -3,14 +3,12 @@ using R3;
 
 namespace MVI
 {
-    public abstract class MviViewModel<TState, TIntent> : ViewModelBase
-        where TState : IState, new()
-        where TIntent : IIntent
+    public abstract class MviViewModel: ViewModelBase
     {
-        protected Store<TState, TIntent> Store { get; private set; }
+        protected Store Store { get; private set; }
         private readonly CompositeDisposable _disposables = new();
 
-        public void BindStore(Store<TState, TIntent> store)
+        public void BindStore(Store store)
         {
             Store = store;
             // 使用 ObserveOnMainThread 确保 UI 线程更新
@@ -20,7 +18,7 @@ namespace MVI
                 .AddTo(_disposables);
         }
 
-        protected virtual void OnStateChanged(TState? state)
+        protected virtual void OnStateChanged(IState? state)
         {
             if (state is null)
             {
@@ -55,7 +53,7 @@ namespace MVI
             base.Dispose(disposing);
         }
 
-        protected void EmitIntent(TIntent intent)
+        protected void EmitIntent(IIntent intent)
         {
             Store.EmitIntent(intent);
         }

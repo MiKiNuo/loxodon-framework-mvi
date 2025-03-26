@@ -6,17 +6,15 @@ using R3;
 
 namespace MVI
 {
-    public abstract class Store<TState, TIntent> : IDisposable
-        where TState : IState
-        where TIntent : IIntent
+    public abstract class Store: IDisposable
     {
-        private readonly Subject<TState> _stateSubject = new();
-        private readonly Subject<TIntent> _intentSubject = new();
+        private readonly Subject<IState> _stateSubject = new();
+        private readonly Subject<IIntent> _intentSubject = new();
         private readonly CompositeDisposable _disposables = new();
-        private TState _currentState;
+        private IState _currentState;
 
-        public TState CurrentState => _currentState;
-        public ReadOnlyReactiveProperty<TState> State { get; }
+        public IState CurrentState => _currentState;
+        public ReadOnlyReactiveProperty<IState> State { get; }
 
         protected Store()
         {
@@ -24,14 +22,14 @@ namespace MVI
             Process(_intentSubject);
         }
 
-        protected async ValueTask<Observable<IMviResult>> ProcessIntentAsync(TIntent intent,
+        protected async ValueTask<Observable<IMviResult>> ProcessIntentAsync(IIntent intent,
             CancellationToken ct = default)
         {
             var result = await intent.HandleIntentAsync(ct);
             return Observable.Return(result);
         }
 
-        public void Process(Observable<TIntent> intents)
+        public void Process(Observable<IIntent> intents)
         {
             intents
                 .SelectAwait(ProcessIntentAsync)
@@ -40,12 +38,12 @@ namespace MVI
                 .AddTo(_disposables);
         }
 
-        public void UpdateState(TState state)
+        public void UpdateState(IState state)
         {
             _stateSubject.OnNext(state);
         }
 
-        public void EmitIntent(TIntent intent)
+        public void EmitIntent(IIntent intent)
         {
             _intentSubject.OnNext(intent);
         }
@@ -58,14 +56,14 @@ namespace MVI
                 return;
             }
 
-            if (EqualityComparer<TState>.Default.Equals(_currentState, newState))
+            if (EqualityComparer<IState>.Default.Equals(_currentState, newState))
                 return;
 
             _currentState = newState;
             UpdateState(newState);
         }
 
-        protected virtual TState Reducer(IMviResult result)
+        protected virtual IState Reducer(IMviResult result)
         {
             return default;
         }

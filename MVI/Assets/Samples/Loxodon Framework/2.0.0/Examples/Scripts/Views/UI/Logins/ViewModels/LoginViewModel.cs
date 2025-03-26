@@ -33,10 +33,11 @@ using Loxodon.Log;
 using System;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using MVI;
 
 namespace Loxodon.Framework.Examples
 {
-    public class LoginViewModel : ViewModelBase
+    public class LoginViewModel : MviViewModel
     {
         private static readonly ILog log = LogManager.GetLogger(typeof(ViewModelBase));
 
@@ -76,6 +77,8 @@ namespace Loxodon.Framework.Examples
             {
                 this.interactionFinished.Raise();/* Request to close the login window */
             });
+            
+            BindStore(new LoginStore());
         }
 
         public IInteractionRequest InteractionFinished
@@ -159,6 +162,7 @@ namespace Loxodon.Framework.Examples
 
         public async void Login()
         {
+            EmitIntent(new LoginIntent() { UserName = Username, Password = this.password });
             try
             {
                 if (log.IsDebugEnabled)
