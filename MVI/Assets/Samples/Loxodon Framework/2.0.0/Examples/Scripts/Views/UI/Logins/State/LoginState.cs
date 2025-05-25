@@ -3,7 +3,7 @@ using MVI;
 
 namespace Loxodon.Framework.Examples
 {
-    public class LoginState : IState
+    public record LoginState : IState
     {
         public bool LoginCommandEnable { set; get; } = true;
         public ObservableDictionary<string, string> Errors { set; get; } = new();
