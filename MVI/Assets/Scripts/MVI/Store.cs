@@ -6,7 +6,7 @@ using R3;
 
 namespace MVI
 {
-    public abstract class Store: IDisposable
+    public abstract class Store : IDisposable
     {
         private readonly Subject<IState> _stateSubject = new();
         private readonly Subject<IIntent> _intentSubject = new();
@@ -56,8 +56,11 @@ namespace MVI
                 return;
             }
 
-            if (EqualityComparer<IState>.Default.Equals(_currentState, newState))
+            if (!newState.IsUpdateNewState && EqualityComparer<IState>.Default.Equals(_currentState, newState))
+            {
+                //如果状态一样则不需要更新状态
                 return;
+            }
 
             _currentState = newState;
             UpdateState(newState);

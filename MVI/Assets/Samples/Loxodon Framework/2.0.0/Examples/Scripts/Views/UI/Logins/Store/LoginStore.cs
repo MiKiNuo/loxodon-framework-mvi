@@ -7,7 +7,12 @@ namespace Loxodon.Framework.Examples
         protected override IState Reducer(IMviResult result)
         {
             var mviResult = result as MviResult;
-            return new LoginState();
+            return mviResult.Code switch
+            {
+                -1 => new LoginFailureState() { ToastContent = mviResult.Msg },
+                0 => new LoginSuccessState() { Account = mviResult.Data as Account },
+                _ => null
+            };
         }
     }
 }

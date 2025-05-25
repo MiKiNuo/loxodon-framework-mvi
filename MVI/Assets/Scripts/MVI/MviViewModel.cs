@@ -38,12 +38,19 @@ namespace MVI
                 if (!vmProp.CanWrite) continue;
 
                 var newValue = stateProp.GetValue(state);
-                var currentValue = vmProp.GetValue(this);
-                if (!Equals(currentValue, newValue))
+                if (!state.IsUpdateNewState)
+                {
+                    //如果当前的VM值跟新的一样则不需要更新
+                    var currentValue = vmProp.GetValue(this);
+                     if (!Equals(currentValue, newValue))
+                     {
+                         vmProp.SetValue(this, newValue);
+                     }
+                }
+                else
                 {
                     vmProp.SetValue(this, newValue);
                 }
-
             }
         }
 

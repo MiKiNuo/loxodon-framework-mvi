@@ -54,17 +54,12 @@ namespace Loxodon.Framework.Examples
 
         public StartupViewModel(IMessenger messenger) : base(messenger)
         {
-            ApplicationContext context = Context.GetApplicationContext();
-            this.localization = context.GetService<Localization>();
-            var accountService = context.GetService<IAccountService>();
-            var globalPreferences = context.GetGlobalPreferences();
-
             //this.LoginRequest = new InteractionRequest<LoginViewModel>(this);          
             this.LoginRequest = new AsyncInteractionRequest<WindowNotification>(this);
             this.LoadSceneRequest = new AsyncInteractionRequest<ProgressBar>(this);
             this.DismissRequest = new InteractionRequest(this);
 
-            var loginViewModel = new LoginViewModel(accountService, localization, globalPreferences);
+            var loginViewModel = new LoginViewModel();
             //this.command = new SimpleCommand(() =>
             //{
             //    this.LoginRequest.Raise(loginViewModel, vm =>
