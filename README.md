@@ -14,5 +14,9 @@ loxodon-framework-mvi在loxodon-framework框架上进行扩展实现MVI架构，
 #### MviViewModel类是继承loxodon-framework框架的ViewNModelBase类，ViewNModelBase类是用来处理业务逻辑的，MVVM所有的业务逻辑基本都写在ViewModel中
 #### Store类是管理状态的更新，用于生成新的状态
 
+## 使用教程
+### 1、每一个意图都需于要实现Intent接口
+### 2、UI界面需要刷新的状态，每个状态都要实现IState接口
+具体实现代码可以看Demo中的登录实例的代码，其中加载进度的代码是loxodon-framework框架Demo的并没有进行修改，登录Demo分别定义了Intent、State、Store、ViewModel、View、Const文件夹
 ## Demo演示
 打开Unity工程找到Samples\Loxodon Framework\2.0.0\Examples\Launcher场景，直接运行即可，该项目工程是在官方Demo基础上进行修改，具体可以进行对比，使用MVI架构后ViewModel和View之间只存在绑定关系不存在业务逻辑关系，所有的业务逻辑都分发到Intent中

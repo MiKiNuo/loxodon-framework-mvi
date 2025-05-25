@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Loxodon.Framework.Contexts;
 using Loxodon.Framework.Examples.Scripts.Views.UI.Logins.Const;
 using Loxodon.Framework.Localizations;
+using Loxodon.Framework.Observables;
 using Loxodon.Framework.Prefs;
 using Loxodon.Log;
 using MVI;
@@ -59,6 +60,7 @@ namespace Loxodon.Framework.Examples
             {
                 result.Code = -1;
                 result.Msg = validateUsername.Item2;
+                result.Data = new ObservableDictionary<string, string> { { "username", validateUsername.Item2 } };
                 return result;
             }
 
@@ -67,6 +69,7 @@ namespace Loxodon.Framework.Examples
             {
                 result.Code = -1;
                 result.Msg = validatePassword.Item2;
+                result.Data = new ObservableDictionary<string, string> { { "password", validatePassword.Item2 } };
                 return result;
             }
 
@@ -93,10 +96,10 @@ namespace Loxodon.Framework.Examples
             {
                 if (log.IsErrorEnabled)
                     log.ErrorFormat("Exception:{0}", e);
-
                 var tipContent = this.localization.GetText("login.exception.tip", "Login exception.");
                 result.Code = -1;
                 result.Msg = tipContent;
+                result.Data = new ObservableDictionary<string, string> { { "exception", e.Message } };
             }
 
             return result;

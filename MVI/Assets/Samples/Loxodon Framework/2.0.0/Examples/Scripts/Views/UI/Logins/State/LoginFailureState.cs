@@ -1,6 +1,8 @@
-﻿namespace Loxodon.Framework.Examples
+﻿
+namespace Loxodon.Framework.Examples
 {
     public class LoginFailureState : LoginState
     {
+
     }
 }

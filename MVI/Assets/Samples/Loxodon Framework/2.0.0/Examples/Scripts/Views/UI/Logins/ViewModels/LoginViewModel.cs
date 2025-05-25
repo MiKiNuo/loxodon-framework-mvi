@@ -72,7 +72,11 @@ namespace Loxodon.Framework.Examples
 
         public IInteractionRequest ToastRequest => this.toastRequest;
 
-        public ObservableDictionary<string, string> Errors => this.errors;
+        public ObservableDictionary<string, string> Errors
+        {
+            get=> this.errors;
+            set => this.Set(ref this.errors, value);
+        }
 
         public ICommand LoginCommand => this.loginCommand;
 

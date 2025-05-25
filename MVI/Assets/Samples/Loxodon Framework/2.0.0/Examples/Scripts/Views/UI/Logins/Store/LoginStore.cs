@@ -1,4 +1,5 @@
-﻿using MVI;
+﻿using Loxodon.Framework.Observables;
+using MVI;
 
 namespace Loxodon.Framework.Examples
 {
@@ -9,7 +10,11 @@ namespace Loxodon.Framework.Examples
             var mviResult = result as MviResult;
             return mviResult.Code switch
             {
-                -1 => new LoginFailureState() { ToastContent = mviResult.Msg },
+                -1 => new LoginFailureState()
+                {
+                    ToastContent = mviResult.Msg,
+                    Errors = mviResult.Data as  ObservableDictionary<string, string>
+                },
                 0 => new LoginSuccessState() { Account = mviResult.Data as Account },
                 _ => null
             };
