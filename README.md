@@ -17,6 +17,8 @@ loxodon-framework-mvi在loxodon-framework框架上进行扩展实现MVI架构，
 ## 使用教程
 ### 1、每一个意图都需于要实现Intent接口
 ### 2、UI界面需要刷新的状态，每个状态都要实现IState接口
+### 3、每个模块或者说每个界面都要有一个Store进行对状态的管理，所以需要继承Store类，具体可以参考Demo
+### 4、View和ViewModel绑定具体教程参考loxodon-framework框架，ViewModel只用绑定相关UI属性和对应点击事件即可,在ViewModel的构造函数中执行绑定BindStore方法，具体看LoginViewModel的构造函数，绑定按钮事件需要执行EmitIntent方法触发意图，具体看Login()方法
 具体实现代码可以看Demo中的登录实例的代码，其中加载进度的代码是loxodon-framework框架Demo的并没有进行修改，登录Demo分别定义了Intent、State、Store、ViewModel、View、Const文件夹
 ## Demo演示
 打开Unity工程找到Samples\Loxodon Framework\2.0.0\Examples\Launcher场景，直接运行即可，该项目工程是在官方Demo基础上进行修改，具体可以进行对比，使用MVI架构后ViewModel和View之间只存在绑定关系不存在业务逻辑关系，所有的业务逻辑都分发到Intent中
