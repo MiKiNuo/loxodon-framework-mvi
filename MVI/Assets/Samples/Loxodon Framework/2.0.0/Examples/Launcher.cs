@@ -32,6 +32,7 @@ using Loxodon.Framework.Binding;
 using Loxodon.Framework.Localizations;
 using Loxodon.Framework.Services;
 using Loxodon.Framework.Messaging;
+using Mapper;
 
 namespace Loxodon.Framework.Examples
 {

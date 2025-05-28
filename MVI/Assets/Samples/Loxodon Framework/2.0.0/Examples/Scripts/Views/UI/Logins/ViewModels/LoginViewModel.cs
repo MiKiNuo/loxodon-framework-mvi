@@ -27,6 +27,7 @@ using Loxodon.Framework.Contexts;
 using Loxodon.Framework.Examples.Scripts.Views.UI.Logins.Const;
 using Loxodon.Framework.Interactivity;
 using Loxodon.Framework.Observables;
+using Mapper;
 using MVI;
 
 namespace Loxodon.Framework.Examples
@@ -52,6 +53,8 @@ namespace Loxodon.Framework.Examples
 
         public LoginViewModel()
         {
+            ConfigureMappings();
+            
             var context = Context.GetApplicationContext();
             var globalPreferences = context.GetGlobalPreferences();
 
@@ -66,8 +69,13 @@ namespace Loxodon.Framework.Examples
             });
 
             BindStore(new LoginStore());
+            
         }
-
+        void ConfigureMappings()
+        {
+            LightMapper.CreateMap<LoginFailureState, LoginViewModel>();
+            LightMapper.CreateMap<LoginSuccessState, LoginViewModel>();
+        }
         public IInteractionRequest InteractionFinished => this.interactionFinished;
 
         public IInteractionRequest ToastRequest => this.toastRequest;
