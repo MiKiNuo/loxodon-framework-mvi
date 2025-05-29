@@ -32,7 +32,8 @@ namespace MVI
             {
                 return;
             }
-            //LightMapper.Map(state, this, onlyUpdateIfChanged: true);
+            //LightMapper.Map(state, this);
+
 
             var vmType = GetType();
             var stateType = state.GetType();
@@ -54,38 +55,6 @@ namespace MVI
             {
                 UnconditionalUpdate(accessors, state);
             }
-
-
-            /*反射影响效率
-            var vmType = GetType();
-            var stateType = state.GetType();
-            var stateProps = stateType.GetProperties();
-
-            foreach (var stateProp in stateProps)
-            {
-                if (stateProp?.CanRead != true) continue;
-
-                var vmProp = vmType.GetProperty(stateProp.Name);
-
-                if (vmProp == null) continue;
-                if (!vmProp.CanWrite) continue;
-
-                var newValue = stateProp.GetValue(state);
-                if (!state.IsUpdateNewState)
-                {
-                    //如果当前的VM值跟新的一样则不需要更新
-                    var currentValue = vmProp.GetValue(this);
-                     if (!Equals(currentValue, newValue))
-                     {
-                         vmProp.SetValue(this, newValue);
-                     }
-                }
-                else
-                {
-                    vmProp.SetValue(this, newValue);
-                }
-            }
-            */
         }
 
         protected override void Dispose(bool disposing)

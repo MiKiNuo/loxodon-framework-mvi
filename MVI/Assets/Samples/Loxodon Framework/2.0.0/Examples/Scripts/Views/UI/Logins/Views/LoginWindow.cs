@@ -27,7 +27,6 @@ using Loxodon.Framework.Binding.Builder;
 using Loxodon.Framework.Interactivity;
 using Loxodon.Framework.Views;
 using Loxodon.Framework.Views.InteractionActions;
-using Loxodon.Log;
 using UnityEngine.UI;
 
 namespace Loxodon.Framework.Examples
@@ -60,6 +59,7 @@ namespace Loxodon.Framework.Examples
             bindingSet.Bind(this.confirmButton).For(v => v.onClick).To(vm => vm.LoginCommand);
             bindingSet.Bind(this.cancelButton).For(v => v.onClick).To(vm => vm.CancelCommand);
             bindingSet.Build();
+            
         }
 
         public virtual void OnInteractionFinished(object sender, InteractionEventArgs args)
