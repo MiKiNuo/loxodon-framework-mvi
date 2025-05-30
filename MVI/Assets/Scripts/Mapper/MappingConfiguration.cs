@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
 
@@ -40,8 +41,11 @@ namespace Mapper
                 expressions.Add(mappingExpr);
             }
 
-            var targetProperties = typeof(TTarget).GetProperties(BindingFlags.Public | BindingFlags.Instance);
-
+            var targetProperties = GetPublicProperties(typeof(TTarget))
+                .Where(p => p.CanWrite && 
+                            !_ignoredProperties.Contains(p.Name) && 
+                            !_customMappings.ContainsKey(p.Name));
+            
             foreach (var targetProp in targetProperties)
             {
                 if (!targetProp.CanWrite) continue;
@@ -79,36 +83,58 @@ namespace Mapper
             Expression<Func<TTarget, TValue>> targetProperty,
             Expression<Func<TSource, TValue>> sourceExpression)
         {
-            if (targetProperty.Body is MemberExpression memberExpr &&
-                memberExpr.Member is PropertyInfo propInfo)
+            // 支持更复杂的表达式类型
+            MemberExpression memberExpr = null;
+            
+            if (targetProperty.Body is MemberExpression me)
+            {
+                memberExpr = me;
+            }
+            else if (targetProperty.Body is UnaryExpression ue && ue.Operand is MemberExpression ueMe)
+            {
+                memberExpr = ueMe;
+            }
+            
+            if (memberExpr != null && memberExpr.Member is PropertyInfo propInfo)
             {
                 if (!propInfo.CanWrite)
                 {
                     throw new ArgumentException("目标属性必须是可写的", nameof(targetProperty));
                 }
-
+                
                 _customMappings[propInfo.Name] = new CustomMapping
                 {
                     TargetProperty = propInfo,
                     SourceExpression = sourceExpression
                 };
-
+                
                 return this;
             }
-
+            
             throw new ArgumentException("必须提供有效的属性表达式", nameof(targetProperty));
         }
 
         public IMappingConfiguration<TSource, TTarget> IgnoreProperty<TValue>(
             Expression<Func<TTarget, TValue>> targetProperty)
         {
-            if (targetProperty.Body is MemberExpression memberExpr &&
-                memberExpr.Member is PropertyInfo propInfo)
+            // 支持更复杂的表达式类型
+            MemberExpression memberExpr = null;
+            
+            if (targetProperty.Body is MemberExpression me)
+            {
+                memberExpr = me;
+            }
+            else if (targetProperty.Body is UnaryExpression ue && ue.Operand is MemberExpression ueMe)
+            {
+                memberExpr = ueMe;
+            }
+            
+            if (memberExpr != null && memberExpr.Member is PropertyInfo propInfo)
             {
                 _ignoredProperties.Add(propInfo.Name);
                 return this;
             }
-
+            
             throw new ArgumentException("必须提供有效的属性表达式", nameof(targetProperty));
         }
         
@@ -136,6 +162,42 @@ namespace Mapper
                 Expression.IfThen(valuesNotEqual, assignExpr));
 
             return Expression.Block(unconditionalUpdate, conditionalUpdate);
+        }
+        
+        private static IEnumerable<PropertyInfo> GetPublicProperties(Type type)
+        {
+            if (type.IsInterface)
+            {
+                // 处理接口的所有属性
+                var propertyInfos = new List<PropertyInfo>();
+                var considered = new HashSet<Type>();
+                var queue = new Queue<Type>();
+                considered.Add(type);
+                queue.Enqueue(type);
+
+                while (queue.Count > 0)
+                {
+                    var subType = queue.Dequeue();
+                    foreach (var subInterface in subType.GetInterfaces())
+                    {
+                        if (considered.Contains(subInterface)) continue;
+                        considered.Add(subInterface);
+                        queue.Enqueue(subInterface);
+                    }
+
+                    var typeProperties = subType.GetProperties(
+                        BindingFlags.Public |
+                        BindingFlags.Instance |
+                        BindingFlags.DeclaredOnly);
+
+                    propertyInfos.AddRange(typeProperties);
+                }
+
+                return propertyInfos.ToArray();
+            }
+
+            // 处理普通类的所有公共属性
+            return type.GetProperties(BindingFlags.Public | BindingFlags.Instance);
         }
     }
 }

@@ -32,8 +32,6 @@ namespace MVI
             {
                 return;
             }
-            //LightMapper.Map(state, this);
-
 
             var vmType = GetType();
             var stateType = state.GetType();
@@ -55,6 +53,7 @@ namespace MVI
             {
                 UnconditionalUpdate(accessors, state);
             }
+            
         }
 
         protected override void Dispose(bool disposing)
