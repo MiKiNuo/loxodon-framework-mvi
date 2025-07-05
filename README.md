@@ -11,7 +11,7 @@ loxodon-framework-mvi在loxodon-framework框架上进行扩展实现MVI架构，
 #### IIntent意图类，用于执行一系列的意图
 #### IMviResult结果类，用于生成意图的结果
 #### IState状态类，表示UI进行显式的状态信息
-#### MviViewModel类是继承loxodon-framework框架的ViewNModelBase类，ViewNModelBase类是用来处理业务逻辑的，MVVM所有的业务逻辑基本都写在ViewModel中
+#### MviViewModel类是继承loxodon-framework框架的ViewModelBase类，ViewModelBase类是用来处理业务逻辑的，MVVM所有的业务逻辑基本都写在ViewModel中
 #### Store类是管理状态的更新，用于生成新的状态
 
 ## 使用教程
