@@ -27,7 +27,6 @@ using Loxodon.Framework.Contexts;
 using Loxodon.Framework.Examples.Scripts.Views.UI.Logins.Const;
 using Loxodon.Framework.Interactivity;
 using Loxodon.Framework.Observables;
-using Mapper;
 using MVI;
 
 namespace Loxodon.Framework.Examples

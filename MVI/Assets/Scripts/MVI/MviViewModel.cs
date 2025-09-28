@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Linq.Expressions;
 using System.Reflection;
 using Loxodon.Framework.ViewModels;
-using Mapper;
 using R3;
 
 namespace MVI
