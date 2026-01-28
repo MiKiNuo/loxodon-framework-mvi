@@ -15,6 +15,17 @@ namespace SourceGenerator
     [Generator]
     public class MapperSourceGenerator : ISourceGenerator
     {
+        private const string DiagnosticsSymbol = "MVI_GENERATOR_DIAGNOSTICS";
+        private static readonly StringComparer PropertyNameComparer = StringComparer.OrdinalIgnoreCase;
+
+        private static readonly DiagnosticDescriptor CaseInsensitiveConflictDescriptor = new(
+            "MVI001",
+            "Case-insensitive property name conflict",
+            "Type '{0}' has multiple public properties that differ only by case. Mapping uses '{1}' and skips '{2}'.",
+            "MVI.Generator",
+            DiagnosticSeverity.Info,
+            true);
+
         public void Initialize(GeneratorInitializationContext context)
         {
             context.RegisterForSyntaxNotifications(() => new CandidateReceiver());
@@ -45,7 +56,8 @@ namespace SourceGenerator
                 return;
             }
 
-            var mappings = BuildMappings(compilation, stateTypes, viewModelTypes);
+            var diagnosticsEnabled = IsDiagnosticsEnabled(compilation);
+            var mappings = BuildMappings(compilation, stateTypes, viewModelTypes, diagnosticsEnabled, diagnosticsEnabled ? context.ReportDiagnostic : null);
             if (mappings.Count == 0)
             {
                 return;
@@ -58,15 +70,22 @@ namespace SourceGenerator
         private static List<TypeMapping> BuildMappings(
             Compilation compilation,
             IReadOnlyCollection<INamedTypeSymbol> stateTypes,
-            IReadOnlyCollection<INamedTypeSymbol> viewModelTypes)
+            IReadOnlyCollection<INamedTypeSymbol> viewModelTypes,
+            bool diagnosticsEnabled,
+            Action<Diagnostic>? reportDiagnostic)
         {
             var mappings = new List<TypeMapping>();
+            var statePropertyMaps = new Dictionary<INamedTypeSymbol, PropertyMap>(SymbolEqualityComparer.Default);
+            var viewModelPropertyMaps = new Dictionary<INamedTypeSymbol, PropertyMap>(SymbolEqualityComparer.Default);
 
             foreach (var state in stateTypes)
             {
+                var stateMap = GetOrCreateStatePropertyMap(statePropertyMaps, state, diagnosticsEnabled, reportDiagnostic);
+
                 foreach (var viewModel in viewModelTypes)
                 {
-                    var pairs = MatchProperties(compilation, state, viewModel);
+                    var viewModelMap = GetOrCreateViewModelPropertyMap(viewModelPropertyMaps, viewModel, diagnosticsEnabled, reportDiagnostic);
+                    var pairs = MatchProperties(compilation, stateMap.Properties, viewModelMap.Properties);
                     if (pairs.Count == 0)
                         continue;
 
@@ -77,6 +96,7 @@ namespace SourceGenerator
             // Prefer the most derived state types first so specific matches win.
             return mappings
                 .OrderByDescending(m => GetInheritanceDepth(m.StateType))
+                .ThenByDescending(m => GetInheritanceDepth(m.ViewModelType))
                 .ToList();
         }
 
@@ -94,22 +114,14 @@ namespace SourceGenerator
 
         private static List<PropertyPair> MatchProperties(
             Compilation compilation,
-            INamedTypeSymbol state,
-            INamedTypeSymbol viewModel)
+            IReadOnlyDictionary<string, IPropertySymbol> stateProps,
+            IReadOnlyDictionary<string, IPropertySymbol> viewModelProps)
         {
             var pairs = new List<PropertyPair>();
 
-            var stateProps = GetAllPublicProperties(state)
-                .Where(p => p.GetMethod is not null && p.Name != "IsUpdateNewState")
-                .ToDictionary(p => p.Name, StringComparer.OrdinalIgnoreCase);
-
-            var vmProps = GetAllPublicProperties(viewModel)
-                .Where(p => p.SetMethod is not null)
-                .ToDictionary(p => p.Name, StringComparer.OrdinalIgnoreCase);
-
             foreach (var kvp in stateProps)
             {
-                if (!vmProps.TryGetValue(kvp.Key, out var vmProp))
+                if (!viewModelProps.TryGetValue(kvp.Key, out var vmProp))
                     continue;
 
                 var stateProp = kvp.Value;
@@ -123,9 +135,77 @@ namespace SourceGenerator
             return pairs;
         }
 
+        private static PropertyMap GetOrCreateStatePropertyMap(
+            Dictionary<INamedTypeSymbol, PropertyMap> cache,
+            INamedTypeSymbol type,
+            bool diagnosticsEnabled,
+            Action<Diagnostic>? reportDiagnostic)
+        {
+            return GetOrCreatePropertyMap(cache, type, diagnosticsEnabled, reportDiagnostic, ShouldIncludeStateProperty);
+        }
+
+        private static PropertyMap GetOrCreateViewModelPropertyMap(
+            Dictionary<INamedTypeSymbol, PropertyMap> cache,
+            INamedTypeSymbol type,
+            bool diagnosticsEnabled,
+            Action<Diagnostic>? reportDiagnostic)
+        {
+            return GetOrCreatePropertyMap(cache, type, diagnosticsEnabled, reportDiagnostic, ShouldIncludeViewModelProperty);
+        }
+
+        private static PropertyMap GetOrCreatePropertyMap(
+            Dictionary<INamedTypeSymbol, PropertyMap> cache,
+            INamedTypeSymbol type,
+            bool diagnosticsEnabled,
+            Action<Diagnostic>? reportDiagnostic,
+            Func<IPropertySymbol, bool> predicate)
+        {
+            if (cache.TryGetValue(type, out var map))
+                return map;
+
+            var properties = new Dictionary<string, IPropertySymbol>(PropertyNameComparer);
+            foreach (var property in GetAllPublicProperties(type))
+            {
+                if (!predicate(property))
+                    continue;
+
+                if (!properties.TryAdd(property.Name, property))
+                {
+                    if (diagnosticsEnabled && reportDiagnostic is not null)
+                    {
+                        var existing = properties[property.Name];
+                        if (!string.Equals(existing.Name, property.Name, StringComparison.Ordinal))
+                        {
+                            var location = property.Locations.FirstOrDefault();
+                            reportDiagnostic(Diagnostic.Create(
+                                CaseInsensitiveConflictDescriptor,
+                                location,
+                                type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+                                existing.Name,
+                                property.Name));
+                        }
+                    }
+                }
+            }
+
+            map = new PropertyMap(properties);
+            cache[type] = map;
+            return map;
+        }
+
+        private static bool ShouldIncludeStateProperty(IPropertySymbol property)
+        {
+            return property.GetMethod is { DeclaredAccessibility: Accessibility.Public }
+                && property.Name != "IsUpdateNewState";
+        }
+
+        private static bool ShouldIncludeViewModelProperty(IPropertySymbol property)
+        {
+            return property.SetMethod is { DeclaredAccessibility: Accessibility.Public } setMethod && !setMethod.IsInitOnly;
+        }
+
         private static IEnumerable<IPropertySymbol> GetAllPublicProperties(INamedTypeSymbol type)
         {
-            var names = new HashSet<string>(StringComparer.Ordinal);
             for (var current = type; current != null; current = current.BaseType)
             {
                 foreach (var property in current.GetMembers().OfType<IPropertySymbol>())
@@ -136,7 +216,10 @@ namespace SourceGenerator
                     if (property.DeclaredAccessibility != Accessibility.Public)
                         continue;
 
-                    if (!names.Add(property.Name))
+                    if (property.IsStatic)
+                        continue;
+
+                    if (property.IsIndexer)
                         continue;
 
                     yield return property;
@@ -150,14 +233,21 @@ namespace SourceGenerator
             Func<INamedTypeSymbol, bool> predicate)
         {
             var results = new List<INamedTypeSymbol>();
+            var seen = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
+            var models = new Dictionary<SyntaxTree, SemanticModel>();
 
             foreach (var candidate in candidates)
             {
-                var model = compilation.GetSemanticModel(candidate.SyntaxTree);
+                if (!models.TryGetValue(candidate.SyntaxTree, out var model))
+                {
+                    model = compilation.GetSemanticModel(candidate.SyntaxTree);
+                    models.Add(candidate.SyntaxTree, model);
+                }
+
                 if (model.GetDeclaredSymbol(candidate) is not INamedTypeSymbol symbol)
                     continue;
 
-                if (predicate(symbol))
+                if (predicate(symbol) && seen.Add(symbol))
                 {
                     results.Add(symbol);
                 }
@@ -178,6 +268,16 @@ namespace SourceGenerator
                 if (SymbolEqualityComparer.Default.Equals(current, baseType))
                     return true;
             }
+            return false;
+        }
+
+        private static bool IsDiagnosticsEnabled(Compilation compilation)
+        {
+            if (compilation is CSharpCompilation csharp)
+            {
+                return csharp.Options.PreprocessorSymbolNames.Contains(DiagnosticsSymbol);
+            }
+
             return false;
         }
 
@@ -265,7 +365,10 @@ namespace SourceGenerator
             public void OnVisitSyntaxNode(SyntaxNode syntaxNode)
             {
                 if (syntaxNode is TypeDeclarationSyntax tds &&
-                    (tds.Kind() == SyntaxKind.ClassDeclaration || tds.Kind() == SyntaxKind.RecordDeclaration))
+                    (tds.Kind() == SyntaxKind.ClassDeclaration ||
+                     tds.Kind() == SyntaxKind.StructDeclaration ||
+                     tds.Kind() == SyntaxKind.RecordDeclaration ||
+                     tds.Kind() == SyntaxKind.RecordStructDeclaration))
                 {
                     TypeCandidates.Add(tds);
                 }
@@ -282,6 +385,16 @@ namespace SourceGenerator
 
             public IPropertySymbol StateProperty { get; }
             public IPropertySymbol ViewModelProperty { get; }
+        }
+
+        private class PropertyMap
+        {
+            public PropertyMap(IReadOnlyDictionary<string, IPropertySymbol> properties)
+            {
+                Properties = properties;
+            }
+
+            public IReadOnlyDictionary<string, IPropertySymbol> Properties { get; }
         }
 
         private class TypeMapping
@@ -302,8 +415,47 @@ namespace SourceGenerator
 
             private static string MakeSafeIdentifier(INamedTypeSymbol type)
             {
-                var name = type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
-                return name.Replace('.', '_').Replace('+', '_');
+                var name = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                var sanitized = SanitizeIdentifier(name);
+                var hash = GetStableHashCode(name);
+                return $"{sanitized}_{hash:X8}";
+            }
+
+            private static string SanitizeIdentifier(string name)
+            {
+                var sb = new StringBuilder(name.Length);
+                foreach (var ch in name)
+                {
+                    if (char.IsLetterOrDigit(ch) || ch == '_')
+                    {
+                        sb.Append(ch);
+                    }
+                    else
+                    {
+                        sb.Append('_');
+                    }
+                }
+
+                if (sb.Length == 0 || !(char.IsLetter(sb[0]) || sb[0] == '_'))
+                {
+                    sb.Insert(0, '_');
+                }
+
+                return sb.ToString();
+            }
+
+            private static int GetStableHashCode(string text)
+            {
+                unchecked
+                {
+                    var hash = 23;
+                    foreach (var ch in text)
+                    {
+                        hash = (hash * 31) + ch;
+                    }
+
+                    return hash;
+                }
             }
         }
     }
