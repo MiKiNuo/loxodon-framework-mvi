@@ -1,11 +1,8 @@
-﻿namespace MVI
+namespace MVI
 {
-
     public interface IState
     {
-        /// <summary>
-        /// 是否更新最新的状态
-        /// </summary>
+        // 是否强制更新状态（true 表示即使相同也触发更新）。
         bool IsUpdateNewState { set; get; }
     }
 }

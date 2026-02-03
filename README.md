@@ -3,6 +3,60 @@
 https://github.com/vovgou/loxodon-framework
 ### MVI架构图如下
 ![alt text](mad-arch-ui-udf.png)
+
+### 本项目的 MVI 落地架构图（便于快速上手）
+#### 流程图（纯文本）
+```
+用户交互
+   │
+   ▼
+View(UI)
+   │  绑定/事件
+   ▼
+MviViewModel
+   │  EmitIntent
+   ▼
+Intent
+   │  处理意图
+   ▼
+Store
+   │  产生新状态
+   ▼
+State
+   │  TryMap/绑定
+   ▼
+MviViewModel
+   │  数据驱动
+   ▼
+View(UI)
+
+（组合式组件化，可选）
+ComposedWindowBase
+   ├─ 组件注册表 → 组件A(View+ViewModel+Store)
+   ├─ 组件注册表 → 组件B(View+ViewModel+Store)
+   └─ 事件路由表 ↔ 组件A / 组件B（Props/Events）
+```
+
+#### 类关系图（纯文本）
+```
+IIntent
+IMviResult
+IState
+
+MviViewModel
+  └─ 依赖：GeneratedStateMapper（由 SourceGenerator 生成）
+
+Store<TState, TIntent, TResult>
+  ├─ 输入：TIntent : IIntent
+  ├─ 输出：TResult : IMviResult
+  └─ 管理：TState : IState
+
+（组合式组件化）
+ComposedWindowBase : Window
+  ├─ 组件注册：IViewBinder / IPropsReceiver<T> / IForceUpdateProps
+  ├─ 事件输出：ComponentEvent
+  └─ 组合 DSL：Compose / Component / WithProps / On / CompareProps
+```
 MVI架构是谷歌最新的UI架构，是在MVVM基础上解决一些生产环境的痛点而产生单项数据、响应式、不可变状态的新型框架，目前主要是在Android原生上使用的比较多，Unity以及其他方面基本没有，所以才创建了loxodon-framework-mvi库。
 ###
 loxodon-framework-mvi在loxodon-framework框架上进行扩展实现MVI架构，没有修改loxodon-framework任何代码，通过Nuget进行包管理引用loxodon-framework，实现了响应式编程、单数据流、不可变状态，主要依赖如下开源库实现：
@@ -20,5 +74,29 @@ loxodon-framework-mvi在loxodon-framework框架上进行扩展实现MVI架构，
 ### 3、每个模块或者说每个界面都要有一个Store进行对状态的管理，所以需要继承Store类，具体可以参考Demo
 ### 4、View和ViewModel绑定具体教程参考loxodon-framework框架，ViewModel只用绑定相关UI属性和对应点击事件即可,在ViewModel的构造函数中执行绑定BindStore方法，具体看LoginViewModel的构造函数，绑定按钮事件需要执行EmitIntent方法触发意图，具体看Login()方法
 具体实现代码可以看Demo中的登录实例的代码，其中加载进度的代码是loxodon-framework框架Demo的并没有进行修改，登录Demo分别定义了Intent、State、Store、ViewModel、View、Const文件夹
+### 5、组合式组件化（新增）
+新增组合式组件化基础能力，位于 `MVI/Assets/Scripts/MVI`（命名空间：`MVI.Components`、`MVI.Composed`）：
+- `Components`：`IViewBinder`、`IPropsReceiver<T>`、`IForceUpdateProps`、`ComponentEvent`
+- `Composed`：`ComposedWindowBase`（组件注册表、事件路由表、props diff、生命周期管理、声明式组合 DSL）
+
+示例 Demo 代码位于：
+- `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/Composed/Views/ComposedDashboardWindow.cs`
+- 组件示例：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/Components/*`
+- 组件 Prefab：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Resources/UI/Components/*`
+- 组合页 Prefab：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Resources/UI/Composed/ComposedDashboard.prefab`
+
+#### 如何切换原来的登录/注册 Demo
+启动入口在 `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Launcher.cs`：
+- 组合式 Demo（当前）：加载 `ComposedDashboardWindow` 与资源 `UI/Composed/ComposedDashboard`
+- 原登录/注册 Demo：改回 `StartupWindow` 与资源 `UI/Startup/Startup`
+
+示例切换代码：
+```
+// 组合式 Demo
+ComposedDashboardWindow window = locator.LoadWindow<ComposedDashboardWindow>(winContainer, "UI/Composed/ComposedDashboard");
+
+// 原登录/注册 Demo
+StartupWindow window = locator.LoadWindow<StartupWindow>(winContainer, "UI/Startup/Startup");
+```
 ## Demo演示
 打开Unity工程找到Samples\Loxodon Framework\2.0.0\Examples\Launcher场景，直接运行即可，该项目工程是在官方Demo基础上进行修改，具体可以进行对比，使用MVI架构后ViewModel和View之间只存在绑定关系不存在业务逻辑关系，所有的业务逻辑都分发到Intent中

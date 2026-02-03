@@ -31,6 +31,7 @@ using Loxodon.Framework.Binding;
 using Loxodon.Framework.Localizations;
 using Loxodon.Framework.Services;
 using Loxodon.Framework.Messaging;
+using Loxodon.Framework.Examples.Composed.Views;
 
 namespace Loxodon.Framework.Examples
 {
@@ -95,7 +96,11 @@ namespace Loxodon.Framework.Examples
             yield return null;
 
             IUIViewLocator locator = context.GetService<IUIViewLocator>();
-            StartupWindow window = locator.LoadWindow<StartupWindow>(winContainer, "UI/Startup/Startup");
+            // 组合式 Demo
+            ComposedDashboardWindow window = locator.LoadWindow<ComposedDashboardWindow>(winContainer, "UI/Composed/ComposedDashboard");
+
+            // 原登录/注册 Demo
+            //StartupWindow window = locator.LoadWindow<StartupWindow>(winContainer, "UI/Startup/Startup");
             window.Create();
             ITransition transition = window.Show().OnStateChanged((w, state) =>
             {
