@@ -5,8 +5,12 @@ using Loxodon.Framework.Examples.Components.UserCard.Store;
 
 namespace Loxodon.Framework.Examples.Components.UserCard.Intent
 {
+    public interface IUserCardIntent : IIntent
+    {
+    }
+
     // 初始化用户信息。
-    public sealed class UserInitIntent : IIntent
+    public sealed class UserInitIntent : IUserCardIntent
     {
         private readonly string userName;
         private readonly int level;
@@ -25,7 +29,7 @@ namespace Loxodon.Framework.Examples.Components.UserCard.Intent
     }
 
     // 设置用户信息。
-    public sealed class UserSetIntent : IIntent
+    public sealed class UserSetIntent : IUserCardIntent
     {
         private readonly string userName;
         private readonly int level;

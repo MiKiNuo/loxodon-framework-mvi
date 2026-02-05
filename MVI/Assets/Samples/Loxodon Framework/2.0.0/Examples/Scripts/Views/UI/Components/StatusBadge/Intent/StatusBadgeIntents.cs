@@ -5,8 +5,12 @@ using Loxodon.Framework.Examples.Components.StatusBadge.Store;
 
 namespace Loxodon.Framework.Examples.Components.StatusBadge.Intent
 {
+    public interface IStatusBadgeIntent : IIntent
+    {
+    }
+
     // 设置状态文本的意图。
-    public sealed class StatusSetIntent : IIntent
+    public sealed class StatusSetIntent : IStatusBadgeIntent
     {
         private readonly string message;
         private readonly bool forceUpdate;

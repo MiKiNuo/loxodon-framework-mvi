@@ -1,12 +1,13 @@
 using MVI;
 using MVI.Components;
 using Loxodon.Framework.Examples.Components.StatusBadge.Intent;
+using Loxodon.Framework.Examples.Components.StatusBadge.State;
 using Loxodon.Framework.Examples.Components.StatusBadge.Store;
 
 namespace Loxodon.Framework.Examples.Components.StatusBadge.ViewModels
 {
     // 状态徽标 ViewModel：接收 props 并更新文本。
-    public sealed class StatusBadgeViewModel : MviViewModel, IPropsReceiver<StatusBadgeProps>
+    public sealed class StatusBadgeViewModel : MviViewModel<StatusBadgeState, IStatusBadgeIntent, StatusBadgeResult>, IPropsReceiver<StatusBadgeProps>
     {
         private string message;
 

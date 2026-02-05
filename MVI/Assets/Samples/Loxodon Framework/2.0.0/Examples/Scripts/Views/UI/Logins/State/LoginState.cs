@@ -7,7 +7,6 @@ namespace Loxodon.Framework.Examples
     {
         public bool LoginCommandEnable { set; get; } = true;
         public ObservableDictionary<string, string> Errors { set; get; } = new();
-        public string ToastContent { set; get; }
 
         public bool IsUpdateNewState { get; set; } = true;
     }

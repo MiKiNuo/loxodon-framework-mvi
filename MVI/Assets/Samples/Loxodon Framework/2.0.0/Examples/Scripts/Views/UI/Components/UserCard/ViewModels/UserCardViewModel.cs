@@ -9,7 +9,7 @@ using Loxodon.Framework.Examples.Components.UserCard.Store;
 namespace Loxodon.Framework.Examples.Components.UserCard.ViewModels
 {
     // 用户卡片 ViewModel：接收 props / 发出 Selected 事件。
-    public sealed class UserCardViewModel : MviViewModel, IPropsReceiver<UserCardProps>
+    public sealed class UserCardViewModel : MviViewModel<UserCardState, IUserCardIntent, UserCardResult>, IPropsReceiver<UserCardProps>
     {
         private string userName;
         private int level;

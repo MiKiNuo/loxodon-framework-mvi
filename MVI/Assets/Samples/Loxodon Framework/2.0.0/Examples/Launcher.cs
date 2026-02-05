@@ -97,10 +97,10 @@ namespace Loxodon.Framework.Examples
 
             IUIViewLocator locator = context.GetService<IUIViewLocator>();
             // 组合式 Demo
-            ComposedDashboardWindow window = locator.LoadWindow<ComposedDashboardWindow>(winContainer, "UI/Composed/ComposedDashboard");
+            //ComposedDashboardWindow window = locator.LoadWindow<ComposedDashboardWindow>(winContainer, "UI/Composed/ComposedDashboard");
 
             // 原登录/注册 Demo
-            //StartupWindow window = locator.LoadWindow<StartupWindow>(winContainer, "UI/Startup/Startup");
+            StartupWindow window = locator.LoadWindow<StartupWindow>(winContainer, "UI/Startup/Startup");
             window.Create();
             ITransition transition = window.Show().OnStateChanged((w, state) =>
             {

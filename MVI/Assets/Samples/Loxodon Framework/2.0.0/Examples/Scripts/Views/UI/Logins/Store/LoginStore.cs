@@ -3,21 +3,41 @@ using MVI;
 
 namespace Loxodon.Framework.Examples
 {
-    public class LoginStore : Store
+    public class LoginStore : Store<LoginState, ILoginIntent, MviResult<LoginResult>, LoginEffect>
     {
-        protected override IState Reducer(IMviResult result)
+        protected override LoginState Reduce(MviResult<LoginResult> result)
         {
-            var mviResult = result as MviResult;
-            return mviResult.Code switch
+            if (result == null)
             {
-                -1 => new LoginFailureState()
-                {
-                    ToastContent = mviResult.Msg,
-                    Errors = mviResult.Data as  ObservableDictionary<string, string>
-                },
-                0 => new LoginSuccessState() { Account = mviResult.Data as Account },
+                return null;
+            }
+
+            var data = result.Data;
+            return result.Code switch
+            {
+                -1 => OnLoginFailed(result.Msg, data),
+                0 => OnLoginSucceeded(data),
                 _ => null
             };
+        }
+
+        private LoginState OnLoginFailed(string message, LoginResult data)
+        {
+            if (!string.IsNullOrWhiteSpace(message))
+            {
+                EmitEffect(new ShowToastEffect(message));
+            }
+
+            return new LoginFailureState()
+            {
+                Errors = data?.Errors ?? new ObservableDictionary<string, string>()
+            };
+        }
+
+        private LoginState OnLoginSucceeded(LoginResult data)
+        {
+            EmitEffect(new FinishLoginEffect());
+            return new LoginSuccessState() { Account = data?.Account };
         }
     }
 }

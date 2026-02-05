@@ -44,6 +44,40 @@ namespace MVI.Composed
             public Action<object> Handler { get; }
         }
 
+        private readonly struct EventRouteKey : IEquatable<EventRouteKey>
+        {
+            public EventRouteKey(string componentId, string eventName)
+            {
+                ComponentId = componentId ?? string.Empty;
+                EventName = eventName ?? string.Empty;
+            }
+
+            public string ComponentId { get; }
+            public string EventName { get; }
+
+            public bool Equals(EventRouteKey other)
+            {
+                return string.Equals(ComponentId, other.ComponentId, StringComparison.Ordinal)
+                    && string.Equals(EventName, other.EventName, StringComparison.Ordinal);
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is EventRouteKey other && Equals(other);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    var hash = 17;
+                    hash = (hash * 31) + ComponentId.GetHashCode();
+                    hash = (hash * 31) + EventName.GetHashCode();
+                    return hash;
+                }
+            }
+        }
+
         protected sealed class ComponentRegistryBuilder
         {
             private readonly ComposedWindowBase owner;
@@ -190,7 +224,7 @@ namespace MVI.Composed
         protected IUIViewLocator ViewLocator { get; private set; }
         private readonly Dictionary<string, ComponentRegistration> registry = new();
         private readonly List<Action> cleanupActions = new();
-        private readonly List<EventRoute> eventRoutes = new();
+        private readonly Dictionary<EventRouteKey, List<EventRoute>> eventRoutes = new();
         private bool isDestroyed;
 
         // 全局组件事件通知（可选订阅）。
@@ -487,7 +521,14 @@ namespace MVI.Composed
                 return;
             }
 
-            eventRoutes.Add(new EventRoute(componentId, eventName, payloadType, handler));
+            var key = new EventRouteKey(componentId, eventName);
+            if (!eventRoutes.TryGetValue(key, out var routes))
+            {
+                routes = new List<EventRoute>();
+                eventRoutes[key] = routes;
+            }
+
+            routes.Add(new EventRoute(componentId, eventName, payloadType, handler));
         }
 
         // 分发事件到路由表。
@@ -498,15 +539,15 @@ namespace MVI.Composed
                 return;
             }
 
-            for (var i = 0; i < eventRoutes.Count; i++)
+            var key = new EventRouteKey(componentEvent.ComponentId, componentEvent.EventName);
+            if (!eventRoutes.TryGetValue(key, out var routes))
             {
-                var route = eventRoutes[i];
-                if (!string.Equals(route.ComponentId, componentEvent.ComponentId)
-                    || !string.Equals(route.EventName, componentEvent.EventName))
-                {
-                    continue;
-                }
+                return;
+            }
 
+            for (var i = 0; i < routes.Count; i++)
+            {
+                var route = routes[i];
                 if (route.PayloadType != null
                     && componentEvent.Payload != null
                     && !route.PayloadType.IsInstanceOfType(componentEvent.Payload))

@@ -9,7 +9,7 @@ using Loxodon.Framework.Examples.Components.CounterCard.Store;
 namespace Loxodon.Framework.Examples.Components.CounterCard.ViewModels
 {
     // 计数卡片 ViewModel：接收 props / 处理点击 / 发出 CountChanged 事件。
-    public sealed class CounterCardViewModel : MviViewModel, IPropsReceiver<CounterCardProps>
+    public sealed class CounterCardViewModel : MviViewModel<CounterCardState, ICounterCardIntent, CounterCardResult>, IPropsReceiver<CounterCardProps>
     {
         private int count;
         private string label;
@@ -64,16 +64,12 @@ namespace Loxodon.Framework.Examples.Components.CounterCard.ViewModels
             EmitIntent(new CounterInitIntent(props.Label, props.Count));
         }
 
-        protected override void OnStateChanged(IState? state)
+        protected override void OnStateChanged(CounterCardState state)
         {
-            base.OnStateChanged(state);
-            if (state is CounterCardState counterState)
+            if (lastNotifiedCount != state.Count)
             {
-                if (lastNotifiedCount != counterState.Count)
-                {
-                    lastNotifiedCount = counterState.Count;
-                    CountChanged?.Invoke(counterState.Count);
-                }
+                lastNotifiedCount = state.Count;
+                CountChanged?.Invoke(state.Count);
             }
         }
 

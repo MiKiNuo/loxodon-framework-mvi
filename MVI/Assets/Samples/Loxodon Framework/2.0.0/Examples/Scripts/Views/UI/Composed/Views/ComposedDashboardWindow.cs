@@ -8,7 +8,6 @@ using Loxodon.Framework.Examples.Components.UserCard.ViewModels;
 using Loxodon.Framework.Examples.Components.UserCard.Views;
 using Loxodon.Framework.Examples.Components.StatusBadge.ViewModels;
 using Loxodon.Framework.Examples.Components.StatusBadge.Views;
-using MVI.Composed;
 
 namespace Loxodon.Framework.Examples.Composed.Views
 {

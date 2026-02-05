@@ -42,14 +42,19 @@ ComposedWindowBase
 IIntent
 IMviResult
 IState
+IMviEffect
 
-MviViewModel
+MviViewModel / MviViewModel<TState, TIntent, TResult, TEffect>
   └─ 依赖：GeneratedStateMapper（由 SourceGenerator 生成）
 
 Store<TState, TIntent, TResult>
   ├─ 输入：TIntent : IIntent
   ├─ 输出：TResult : IMviResult
   └─ 管理：TState : IState
+
+Store<TState, TIntent, TResult, TEffect>
+  ├─ Effects：TEffect : IMviEffect
+  └─ Errors：MviErrorEffect
 
 （组合式组件化）
 ComposedWindowBase : Window
@@ -65,6 +70,7 @@ loxodon-framework-mvi在loxodon-framework框架上进行扩展实现MVI架构，
 #### IIntent意图类，用于执行一系列的意图
 #### IMviResult结果类，用于生成意图的结果
 #### IState状态类，表示UI进行显式的状态信息
+#### IMviEffect一次性事件类（Toast/弹窗/导航等）
 #### MviViewModel类是继承loxodon-framework框架的ViewModelBase类，ViewModelBase类是用来处理业务逻辑的，MVVM所有的业务逻辑基本都写在ViewModel中
 #### Store类是管理状态的更新，用于生成新的状态
 
@@ -98,5 +104,46 @@ ComposedDashboardWindow window = locator.LoadWindow<ComposedDashboardWindow>(win
 // 原登录/注册 Demo
 StartupWindow window = locator.LoadWindow<StartupWindow>(winContainer, "UI/Startup/Startup");
 ```
+
+## 新增能力与扩展
+### 泛型 Store / MviResult
+使用 `Store<TState, TIntent, TResult>` 与 `MviResult<T>`，减少强制转换与运行期错误。
+
+### Effects 与错误通道
+一次性事件通过 `IMviEffect` 发送，避免污染 State。错误统一通过 `MviErrorEffect` 暴露：
+- `Store.Effects`：业务 Effect（Toast/导航等）
+- `Store.Errors`：标准化错误流
+
+### Intent 并发与取消
+Store 支持并发策略与取消：
+- `ProcessingMode`：`Switch/Sequential/Parallel/SequentialParallel` 等
+- `MaxConcurrent`：并发上限
+- `EmitIntent(intent, cancellationToken)`：可取消意图
+
+### 初始状态
+Store 可覆写 `CreateInitialState()` 或 `InitialState`（泛型 Store）来提供初始状态。
+
+### 可定制映射规则
+通过特性控制映射：
+- `[MviIgnore]`：忽略该属性
+- `[MviMap("OtherName")]`：自定义映射名（可用在 State 或 ViewModel）
+
+### 诊断与可观测性
+使用 `MviDiagnostics` 统一记录 Intent/Result/State/Effect 流程：
+```
+MviDiagnostics.Enabled = true;
+MviDiagnostics.Log = msg => UnityEngine.Debug.Log(msg);
+```
+
+### 程序集拆分（asmdef）
+已将核心与示例拆分为独立程序集：
+- `MVI`：核心运行时（依赖 `R3.Unity`、`Loxodon.Framework`）
+- `MVI.Examples`：示例代码（依赖 `MVI`、`Loxodon.Framework`、`Loxodon.Log`）
+- `MVI.Tests`：编辑器测试（依赖 `MVI`、`R3.Unity`、Unity TestRunner）
+
+### 测试示例
+编辑器下测试示例位于：
+- `MVI/Assets/Tests/Editor/MviStoreTests.cs`
+
 ## Demo演示
 打开Unity工程找到Samples\Loxodon Framework\2.0.0\Examples\Launcher场景，直接运行即可，该项目工程是在官方Demo基础上进行修改，具体可以进行对比，使用MVI架构后ViewModel和View之间只存在绑定关系不存在业务逻辑关系，所有的业务逻辑都分发到Intent中

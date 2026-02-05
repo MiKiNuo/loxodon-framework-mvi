@@ -5,8 +5,12 @@ using Loxodon.Framework.Examples.Components.CounterCard.Store;
 
 namespace Loxodon.Framework.Examples.Components.CounterCard.Intent
 {
+    public interface ICounterCardIntent : IIntent
+    {
+    }
+
     // 初始化计数与标题。
-    public sealed class CounterInitIntent : IIntent
+    public sealed class CounterInitIntent : ICounterCardIntent
     {
         private readonly string label;
         private readonly int count;
@@ -25,7 +29,7 @@ namespace Loxodon.Framework.Examples.Components.CounterCard.Intent
     }
 
     // 计数增量意图。
-    public sealed class CounterIncrementIntent : IIntent
+    public sealed class CounterIncrementIntent : ICounterCardIntent
     {
         private readonly int delta;
 
@@ -42,7 +46,7 @@ namespace Loxodon.Framework.Examples.Components.CounterCard.Intent
     }
 
     // 设置标题意图。
-    public sealed class CounterSetLabelIntent : IIntent
+    public sealed class CounterSetLabelIntent : ICounterCardIntent
     {
         private readonly string label;
 

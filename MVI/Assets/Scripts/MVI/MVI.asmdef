@@ -1,0 +1,16 @@
+{
+    "name": "MVI",
+    "rootNamespace": "MVI",
+    "references": [
+        "R3.Unity",
+        "Loxodon.Framework"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": []
+}

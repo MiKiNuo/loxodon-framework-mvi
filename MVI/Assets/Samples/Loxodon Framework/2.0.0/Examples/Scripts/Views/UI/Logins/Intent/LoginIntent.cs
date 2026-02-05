@@ -12,7 +12,11 @@ using MVI;
 
 namespace Loxodon.Framework.Examples
 {
-    public record LoginIntent : IIntent
+    public interface ILoginIntent : IIntent
+    {
+    }
+
+    public class LoginIntent : ILoginIntent
     {
         public string UserName { get; set; }
         public string Password { get; set; }
@@ -52,7 +56,7 @@ namespace Loxodon.Framework.Examples
 
         public async ValueTask<IMviResult> HandleIntentAsync(CancellationToken ct = default)
         {
-            var result = new MviResult();
+            var result = new MviResult<LoginResult>();
             if (log.IsDebugEnabled)
                 log.DebugFormat("login start. username:{0} password:{1}", this.UserName, this.Password);
             var validateUsername = this.ValidateUsername();
@@ -60,7 +64,7 @@ namespace Loxodon.Framework.Examples
             {
                 result.Code = -1;
                 result.Msg = validateUsername.Item2;
-                result.Data = new ObservableDictionary<string, string> { { "username", validateUsername.Item2 } };
+                result.Data = new LoginResult(null, new ObservableDictionary<string, string> { { "username", validateUsername.Item2 } });
                 return result;
             }
 
@@ -69,7 +73,7 @@ namespace Loxodon.Framework.Examples
             {
                 result.Code = -1;
                 result.Msg = validatePassword.Item2;
-                result.Data = new ObservableDictionary<string, string> { { "password", validatePassword.Item2 } };
+                result.Data = new LoginResult(null, new ObservableDictionary<string, string> { { "password", validatePassword.Item2 } });
                 return result;
             }
 
@@ -78,7 +82,7 @@ namespace Loxodon.Framework.Examples
                 var account = await this.accountService.Login(this.UserName, this.Password);
                 if (account != null)
                 {
-                    result.Data = account;
+                    result.Data = new LoginResult(account, null);
                     result.Code = 0;
                     /* login success */
                     globalPreferences.SetString(LoginConst.LAST_USERNAME_KEY, this.UserName);
@@ -90,6 +94,7 @@ namespace Loxodon.Framework.Examples
                     var tipContent = this.localization.GetText("login.failure.tip", "Login failure.");
                     result.Code = -1;
                     result.Msg = tipContent;
+                    result.Data = new LoginResult(null, null);
                 }
             }
             catch (Exception e)
@@ -99,7 +104,7 @@ namespace Loxodon.Framework.Examples
                 var tipContent = this.localization.GetText("login.exception.tip", "Login exception.");
                 result.Code = -1;
                 result.Msg = tipContent;
-                result.Data = new ObservableDictionary<string, string> { { "exception", e.Message } };
+                result.Data = new LoginResult(null, new ObservableDictionary<string, string> { { "exception", e.Message } });
             }
 
             return result;

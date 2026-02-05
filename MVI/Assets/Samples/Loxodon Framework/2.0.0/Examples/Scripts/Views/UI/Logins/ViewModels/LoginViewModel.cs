@@ -31,16 +31,13 @@ using MVI;
 
 namespace Loxodon.Framework.Examples
 {
-    public class LoginViewModel : MviViewModel
+    public class LoginViewModel : MviViewModel<LoginState, ILoginIntent, MviResult<LoginResult>, LoginEffect>
     {
         private string username;
         private string password;
 
         private Account account;
-        private string toastContent;
-        
         private bool loginCommandEnable;
-        private bool isInteractionFinished;
 
         private SimpleCommand loginCommand;
         private SimpleCommand cancelCommand;
@@ -115,31 +112,27 @@ namespace Loxodon.Framework.Examples
             }
         }
 
-        public bool IsInteractionFinished
+        protected override void OnEffect(LoginEffect effect)
         {
-            get => this.isInteractionFinished;
-            set
+            switch (effect)
             {
-                if (Set(ref this.isInteractionFinished, value))
-                {
-                }
-
-                /* Interaction completed, request to close the login window */
-                this.interactionFinished.Raise();
+                case ShowToastEffect toast:
+                    this.toastRequest.Raise(new ToastNotification(toast.Message, toast.Duration));
+                    break;
+                case FinishLoginEffect:
+                    this.interactionFinished.Raise();
+                    break;
             }
         }
 
-        public string ToastContent
+        protected override void OnError(MviErrorEffect error)
         {
-            get => this.toastContent;
-            set
+            if (string.IsNullOrWhiteSpace(error?.Message))
             {
-                if (Set(ref this.toastContent, value))
-                {
-                }
-
-                this.toastRequest.Raise(new ToastNotification(this.toastContent, 2f));
+                return;
             }
+
+            this.toastRequest.Raise(new ToastNotification(error.Message, 2f));
         }
 
 

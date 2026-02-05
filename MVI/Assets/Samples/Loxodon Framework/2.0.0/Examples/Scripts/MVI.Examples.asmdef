@@ -1,0 +1,16 @@
+{
+    "name": "MVI.Examples",
+    "references": [
+        "MVI",
+        "Loxodon.Framework",
+        "Loxodon.Log"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": []
+}

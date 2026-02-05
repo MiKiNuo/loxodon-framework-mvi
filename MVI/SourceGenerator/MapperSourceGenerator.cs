@@ -16,6 +16,8 @@ namespace SourceGenerator
     public class MapperSourceGenerator : ISourceGenerator
     {
         private const string DiagnosticsSymbol = "MVI_GENERATOR_DIAGNOSTICS";
+        private const string MapAttributeMetadataName = "MVI.MviMapAttribute";
+        private const string IgnoreAttributeMetadataName = "MVI.MviIgnoreAttribute";
         private static readonly StringComparer PropertyNameComparer = StringComparer.OrdinalIgnoreCase;
 
         private static readonly DiagnosticDescriptor CaseInsensitiveConflictDescriptor = new(
@@ -39,6 +41,8 @@ namespace SourceGenerator
             var compilation = context.Compilation;
             var stateInterface = compilation.GetTypeByMetadataName("MVI.IState");
             var viewModelBase = compilation.GetTypeByMetadataName("MVI.MviViewModel");
+            var mapAttribute = compilation.GetTypeByMetadataName(MapAttributeMetadataName);
+            var ignoreAttribute = compilation.GetTypeByMetadataName(IgnoreAttributeMetadataName);
 
             if (stateInterface is null || viewModelBase is null)
             {
@@ -57,7 +61,7 @@ namespace SourceGenerator
             }
 
             var diagnosticsEnabled = IsDiagnosticsEnabled(compilation);
-            var mappings = BuildMappings(compilation, stateTypes, viewModelTypes, diagnosticsEnabled, diagnosticsEnabled ? context.ReportDiagnostic : null);
+            var mappings = BuildMappings(compilation, stateTypes, viewModelTypes, mapAttribute, ignoreAttribute, diagnosticsEnabled, diagnosticsEnabled ? context.ReportDiagnostic : null);
             if (mappings.Count == 0)
             {
                 return;
@@ -71,6 +75,8 @@ namespace SourceGenerator
             Compilation compilation,
             IReadOnlyCollection<INamedTypeSymbol> stateTypes,
             IReadOnlyCollection<INamedTypeSymbol> viewModelTypes,
+            INamedTypeSymbol? mapAttribute,
+            INamedTypeSymbol? ignoreAttribute,
             bool diagnosticsEnabled,
             Action<Diagnostic>? reportDiagnostic)
         {
@@ -80,12 +86,12 @@ namespace SourceGenerator
 
             foreach (var state in stateTypes)
             {
-                var stateMap = GetOrCreateStatePropertyMap(statePropertyMaps, state, diagnosticsEnabled, reportDiagnostic);
+                var stateMap = GetOrCreateStatePropertyMap(statePropertyMaps, state, ignoreAttribute, diagnosticsEnabled, reportDiagnostic);
 
                 foreach (var viewModel in viewModelTypes)
                 {
-                    var viewModelMap = GetOrCreateViewModelPropertyMap(viewModelPropertyMaps, viewModel, diagnosticsEnabled, reportDiagnostic);
-                    var pairs = MatchProperties(compilation, stateMap.Properties, viewModelMap.Properties);
+                    var viewModelMap = GetOrCreateViewModelPropertyMap(viewModelPropertyMaps, viewModel, mapAttribute, ignoreAttribute, diagnosticsEnabled, reportDiagnostic);
+                    var pairs = MatchProperties(compilation, stateMap.Properties, viewModelMap.Properties, mapAttribute);
                     if (pairs.Count == 0)
                         continue;
 
@@ -115,16 +121,18 @@ namespace SourceGenerator
         private static List<PropertyPair> MatchProperties(
             Compilation compilation,
             IReadOnlyDictionary<string, IPropertySymbol> stateProps,
-            IReadOnlyDictionary<string, IPropertySymbol> viewModelProps)
+            IReadOnlyDictionary<string, IPropertySymbol> viewModelProps,
+            INamedTypeSymbol? mapAttribute)
         {
             var pairs = new List<PropertyPair>();
 
             foreach (var kvp in stateProps)
             {
-                if (!viewModelProps.TryGetValue(kvp.Key, out var vmProp))
+                var stateProp = kvp.Value;
+                var targetName = GetMappedName(stateProp, mapAttribute) ?? stateProp.Name;
+                if (!viewModelProps.TryGetValue(targetName, out var vmProp))
                     continue;
 
-                var stateProp = kvp.Value;
                 var conversion = compilation.ClassifyConversion(stateProp.Type, vmProp.Type);
                 if (!conversion.Exists || !(conversion.IsIdentity || conversion.IsImplicit))
                     continue;
@@ -138,19 +146,43 @@ namespace SourceGenerator
         private static PropertyMap GetOrCreateStatePropertyMap(
             Dictionary<INamedTypeSymbol, PropertyMap> cache,
             INamedTypeSymbol type,
+            INamedTypeSymbol? ignoreAttribute,
             bool diagnosticsEnabled,
             Action<Diagnostic>? reportDiagnostic)
         {
-            return GetOrCreatePropertyMap(cache, type, diagnosticsEnabled, reportDiagnostic, ShouldIncludeStateProperty);
+            return GetOrCreatePropertyMap(cache, type, diagnosticsEnabled, reportDiagnostic,
+                property => ShouldIncludeStateProperty(property, ignoreAttribute));
         }
 
         private static PropertyMap GetOrCreateViewModelPropertyMap(
             Dictionary<INamedTypeSymbol, PropertyMap> cache,
             INamedTypeSymbol type,
+            INamedTypeSymbol? mapAttribute,
+            INamedTypeSymbol? ignoreAttribute,
             bool diagnosticsEnabled,
             Action<Diagnostic>? reportDiagnostic)
         {
-            return GetOrCreatePropertyMap(cache, type, diagnosticsEnabled, reportDiagnostic, ShouldIncludeViewModelProperty);
+            if (cache.TryGetValue(type, out var map))
+                return map;
+
+            var properties = new Dictionary<string, IPropertySymbol>(PropertyNameComparer);
+            foreach (var property in GetAllPublicProperties(type))
+            {
+                if (!ShouldIncludeViewModelProperty(property, ignoreAttribute))
+                    continue;
+
+                TryAddProperty(properties, property.Name, property, type, diagnosticsEnabled, reportDiagnostic);
+
+                var alias = GetMappedName(property, mapAttribute);
+                if (!string.IsNullOrWhiteSpace(alias))
+                {
+                    TryAddProperty(properties, alias, property, type, diagnosticsEnabled, reportDiagnostic);
+                }
+            }
+
+            map = new PropertyMap(properties);
+            cache[type] = map;
+            return map;
         }
 
         private static PropertyMap GetOrCreatePropertyMap(
@@ -193,15 +225,101 @@ namespace SourceGenerator
             return map;
         }
 
-        private static bool ShouldIncludeStateProperty(IPropertySymbol property)
+        private static bool ShouldIncludeStateProperty(IPropertySymbol property, INamedTypeSymbol? ignoreAttribute)
         {
+            if (HasAttribute(property, ignoreAttribute))
+            {
+                return false;
+            }
+
             return property.GetMethod is { DeclaredAccessibility: Accessibility.Public }
                 && property.Name != "IsUpdateNewState";
         }
 
-        private static bool ShouldIncludeViewModelProperty(IPropertySymbol property)
+        private static bool ShouldIncludeViewModelProperty(IPropertySymbol property, INamedTypeSymbol? ignoreAttribute)
         {
+            if (HasAttribute(property, ignoreAttribute))
+            {
+                return false;
+            }
+
             return property.SetMethod is { DeclaredAccessibility: Accessibility.Public } setMethod && !setMethod.IsInitOnly;
+        }
+
+        private static bool HasAttribute(IPropertySymbol property, INamedTypeSymbol? attributeSymbol)
+        {
+            if (attributeSymbol is null)
+            {
+                return false;
+            }
+
+            foreach (var attribute in property.GetAttributes())
+            {
+                if (SymbolEqualityComparer.Default.Equals(attribute.AttributeClass, attributeSymbol))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static string? GetMappedName(IPropertySymbol property, INamedTypeSymbol? mapAttribute)
+        {
+            if (mapAttribute is null)
+            {
+                return null;
+            }
+
+            foreach (var attribute in property.GetAttributes())
+            {
+                if (!SymbolEqualityComparer.Default.Equals(attribute.AttributeClass, mapAttribute))
+                {
+                    continue;
+                }
+
+                if (attribute.ConstructorArguments.Length == 1
+                    && attribute.ConstructorArguments[0].Value is string name
+                    && !string.IsNullOrWhiteSpace(name))
+                {
+                    return name;
+                }
+            }
+
+            return null;
+        }
+
+        private static void TryAddProperty(
+            IDictionary<string, IPropertySymbol> properties,
+            string name,
+            IPropertySymbol property,
+            INamedTypeSymbol type,
+            bool diagnosticsEnabled,
+            Action<Diagnostic>? reportDiagnostic)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return;
+            }
+
+            if (!properties.TryAdd(name, property))
+            {
+                if (diagnosticsEnabled && reportDiagnostic is not null)
+                {
+                    var existing = properties[name];
+                    if (!SymbolEqualityComparer.Default.Equals(existing, property)
+                        && !string.Equals(existing.Name, name, StringComparison.Ordinal))
+                    {
+                        var location = property.Locations.FirstOrDefault();
+                        reportDiagnostic(Diagnostic.Create(
+                            CaseInsensitiveConflictDescriptor,
+                            location,
+                            type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+                            existing.Name,
+                            property.Name));
+                    }
+                }
+            }
         }
 
         private static IEnumerable<IPropertySymbol> GetAllPublicProperties(INamedTypeSymbol type)
@@ -247,7 +365,7 @@ namespace SourceGenerator
                 if (model.GetDeclaredSymbol(candidate) is not INamedTypeSymbol symbol)
                     continue;
 
-                if (predicate(symbol) && seen.Add(symbol))
+                if (predicate(symbol) && IsAccessibleType(symbol) && seen.Add(symbol))
                 {
                     results.Add(symbol);
                 }
@@ -269,6 +387,20 @@ namespace SourceGenerator
                     return true;
             }
             return false;
+        }
+
+        private static bool IsAccessibleType(INamedTypeSymbol type)
+        {
+            for (var current = type; current != null; current = current.ContainingType)
+            {
+                if (current.DeclaredAccessibility != Accessibility.Public
+                    && current.DeclaredAccessibility != Accessibility.Internal)
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         private static bool IsDiagnosticsEnabled(Compilation compilation)
