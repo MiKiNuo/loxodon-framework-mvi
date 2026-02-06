@@ -81,9 +81,9 @@ loxodon-framework-mvi在loxodon-framework框架上进行扩展实现MVI架构，
 ### 4、View和ViewModel绑定具体教程参考loxodon-framework框架，ViewModel只用绑定相关UI属性和对应点击事件即可,在ViewModel的构造函数中执行绑定BindStore方法，具体看LoginViewModel的构造函数，绑定按钮事件需要执行EmitIntent方法触发意图，具体看Login()方法
 具体实现代码可以看Demo中的登录实例的代码，其中加载进度的代码是loxodon-framework框架Demo的并没有进行修改，登录Demo分别定义了Intent、State、Store、ViewModel、View、Const文件夹
 ### 5、组合式组件化（新增）
-新增组合式组件化基础能力，位于 `MVI/Assets/Scripts/MVI`（命名空间：`MVI.Components`、`MVI.Composed`）：
-- `Components`：`IViewBinder`、`IPropsReceiver<T>`、`IForceUpdateProps`、`ComponentEvent`
-- `Composed`：`ComposedWindowBase`（组件注册表、事件路由表、props diff、生命周期管理、声明式组合 DSL）
+新增组合式组件化基础能力，位于：
+- `MVI/Assets/Scripts/MVI/Core/Components`（命名空间：`MVI.Components`）：`IViewBinder`、`IPropsReceiver<T>`、`IForceUpdateProps`、`ComponentEvent`
+- `MVI/Assets/Scripts/MVI/Loxodon/Composed`（命名空间：`MVI.Composed`）：`ComposedWindowBase`（组件注册表、事件路由表、props diff、生命周期管理、声明式组合 DSL）
 
 示例 Demo 代码位于：
 - `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/Composed/Views/ComposedDashboardWindow.cs`
@@ -136,10 +136,12 @@ MviDiagnostics.Log = msg => UnityEngine.Debug.Log(msg);
 ```
 
 ### 程序集拆分（asmdef）
-已将核心与示例拆分为独立程序集：
-- `MVI`：核心运行时（依赖 `R3.Unity`、`Loxodon.Framework`）
-- `MVI.Examples`：示例代码（依赖 `MVI`、`Loxodon.Framework`、`Loxodon.Log`）
-- `MVI.Tests`：编辑器测试（依赖 `MVI`、`R3.Unity`、Unity TestRunner）
+已将核心与 UI 框架适配拆分为独立程序集：
+- `MVI.Core`：核心运行时（依赖 `R3.Unity`）
+- `MVI.Loxodon`：Loxodon 适配（依赖 `MVI.Core`、`R3.Unity`、`Loxodon.Framework`）
+- `MVI.Examples`：示例代码（依赖 `MVI.Core`、`MVI.Loxodon`、`Loxodon.Framework`、`Loxodon.Log`）
+- `MVI.Tests`：编辑器测试（依赖 `MVI.Core`、`MVI.Loxodon`、`R3.Unity`、Unity TestRunner）
+- `MVI.FairyGUI` / `MVI.NGUI`：可选 UI 适配（Define 约束：`MVI_FAIRYGUI` / `MVI_NGUI`）
 
 ### 测试示例
 编辑器下测试示例位于：

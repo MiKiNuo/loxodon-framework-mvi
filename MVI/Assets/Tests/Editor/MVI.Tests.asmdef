@@ -1,7 +1,8 @@
 {
     "name": "MVI.Tests",
     "references": [
-        "MVI",
+        "MVI.Core",
+        "MVI.Loxodon",
         "R3.Unity",
         "Loxodon.Framework"
     ],

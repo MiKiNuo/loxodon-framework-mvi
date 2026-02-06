@@ -1,10 +1,9 @@
 {
-    "name": "MVI.Examples",
+    "name": "MVI.Loxodon",
     "references": [
         "MVI.Core",
-        "MVI.Loxodon",
-        "Loxodon.Framework",
-        "Loxodon.Log"
+        "R3.Unity",
+        "Loxodon.Framework"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
