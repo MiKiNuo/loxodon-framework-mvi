@@ -141,23 +141,69 @@ MviDiagnostics.Log = msg => UnityEngine.Debug.Log(msg);
 - `MVI.Loxodon`：Loxodon 适配（依赖 `MVI.Core`、`R3.Unity`、`Loxodon.Framework`）
 - `MVI.Examples`：示例代码（依赖 `MVI.Core`、`MVI.Loxodon`、`Loxodon.Framework`、`Loxodon.Log`）
 - `MVI.Tests`：编辑器测试（依赖 `MVI.Core`、`MVI.Loxodon`、`R3.Unity`、Unity TestRunner）
-- `MVI.FairyGUI` / `MVI.NGUI`：可选 UI 适配（Define 约束：`MVI_FAIRYGUI` / `MVI_NGUI`）
+- `MVI.FairyGUI`：FairyGUI 适配与 Loxodon 绑定扩展（依赖 `MVI.Core`、`MVI.Loxodon`、`Loxodon.Framework`、`FairyGUI`）
 
 ### 测试示例
 编辑器下测试示例位于：
 - `MVI/Assets/Tests/Editor/MviStoreTests.cs`
 
-### FairyGUI 适配示例
-示例代码位于：
-- `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/FairyCounterExample.cs`
-- `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/FairyComposedDashboardView.cs`
-启用条件：
-- 在 Unity 的 `Scripting Define Symbols` 中添加 `MVI_FAIRYGUI`
-说明：
-- `MviFairyView` 会先加载 `PackagePaths`（如 `UI/xxx`），再通过 `PackageName/ComponentName` 创建 UI
-- 支持两种模式：`UIPanel`（Inspector 配置）或 `GRoot`（代码创建并挂载）
-- 若要对接 AssetBundle / YooAsset，可实现 `IFairyPackageLoader` 并覆写 `PackageLoader`
- - FairyGUI 包示例路径：`MVI/Assets/Res/ComposedDashboardWindow`（Editor 下可直接 `Assets/...` 路径加载）
+### FairyGUI 适配与使用
+#### 1. Demo 切换（UGUI / FairyGUI）
+打开 `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Launcher.unity`，在 `Launcher` 组件上设置：
+- `demoUiKind = UGUI`：运行 UGUI 组合式 Demo
+- `demoUiKind = FairyGUI`：运行 FairyGUI 组合式 Demo
+
+可选：
+- `enableRuntimeToggle` + `toggleKey`：运行时按键切换
+- `usePlayerPrefsOverride`：用 `PlayerPrefs` 覆盖默认配置
+
+#### 2. 绑定初始化（必需）
+在 `Launcher.Awake()` 中初始化：
+```
+BindingServiceBundle bundle = new BindingServiceBundle(context.GetContainer());
+bundle.Start();
+FairyGUIBindingServiceBundle fairyBundle = new FairyGUIBindingServiceBundle(context.GetContainer());
+fairyBundle.Start();
+```
+这一步确保 FairyGUI 的 `GButton.onClick` 等事件可以被 Loxodon 绑定识别。
+
+#### 3. FairyGUI 资源加载
+Editor 下：
+```
+UIPackage.AddPackage("Assets/Res/ComposedDashboardWindow");
+ComposedDashboardWindowBinder.BindAll();
+```
+运行时（YooAsset 接入后）：
+- 使用 YooAsset 加载 AssetBundle
+- `UIPackage.AddPackage(bundle)`
+- 再调用 `ComposedDashboardWindowBinder.BindAll()`
+
+#### 4. FairyGUI Demo 目录
+- 组合式 Demo 入口：  
+  `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/Composed/Views/FairyComposedDashboardView.cs`
+- 组合式子组件 View：  
+  `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/Composed/Components/*/Views`
+- 计数器 Demo：  
+  `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/Counter/Views/FairyCounterView.cs`
+- FairyGUI 自动生成代码（Binder + UI 类）：  
+  `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/ComposedDashboardWindow/*`
+
+#### 5. 组合式页面布局（策略模式）
+布局策略位于：
+`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/Composed/Layouts`
+
+已内置策略：
+- `VerticalCenter`
+- `LeftRightSplit`
+- `VariableSpacingVertical`
+- `Grid`
+- `AbsolutePosition`
+- `PlaceholderAlign`
+
+在 `FairyComposedDashboardView` 上通过 `layoutKind` 选择策略，并可配置参数；支持运行时 `SwitchLayout` / `RebuildLayout`。
+
+#### 6. 关于 GLoader
+FairyGUI 组合式 Demo 默认**不使用 GLoader**加载组件，而是直接 `AddChild` 挂载组件，以保证点击命中与事件响应稳定。
 
 ## Demo演示
 打开Unity工程找到Samples\Loxodon Framework\2.0.0\Examples\Launcher场景，直接运行即可，该项目工程是在官方Demo基础上进行修改，具体可以进行对比，使用MVI架构后ViewModel和View之间只存在绑定关系不存在业务逻辑关系，所有的业务逻辑都分发到Intent中
