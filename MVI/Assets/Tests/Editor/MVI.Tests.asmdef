@@ -3,6 +3,7 @@
     "references": [
         "MVI.Core",
         "MVI.Loxodon",
+        "MVI.FairyGUI",
         "R3.Unity",
         "Loxodon.Framework"
     ],

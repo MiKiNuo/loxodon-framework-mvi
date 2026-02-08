@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<packageDescription id="vbolh2kz">
+  <resources>
+    <component id="hywa0" name="ComposedDashboard.xml" path="/" exported="true"/>
+    <component id="sd1v1" name="CounterCard.xml" path="/" exported="true"/>
+    <component id="sd1v2" name="IncrementButton.xml" path="/"/>
+    <component id="sd1v3" name="StatusBadge.xml" path="/" exported="true"/>
+    <component id="sd1v4" name="UserCard.xml" path="/" exported="true"/>
+    <component id="sd1v5" name="SelectButton.xml" path="/"/>
+  </resources>
+  <publish name="" path="G:\MiKiNuoProjects\loxodon-framework-mvi\MVI\Assets\Res" packageCount="2" genCode="true"/>
+</packageDescription>

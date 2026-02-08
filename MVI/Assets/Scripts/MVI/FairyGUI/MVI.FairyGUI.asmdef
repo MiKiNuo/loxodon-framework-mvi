@@ -2,7 +2,10 @@
     "name": "MVI.FairyGUI",
     "references": [
         "MVI.Core",
-        "R3.Unity"
+        "MVI.Loxodon",
+        "Loxodon.Framework",
+        "R3.Unity",
+        "FairyGUI"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
@@ -10,8 +13,6 @@
     "overrideReferences": false,
     "precompiledReferences": [],
     "autoReferenced": true,
-    "defineConstraints": [
-        "MVI_FAIRYGUI"
-    ],
+    "defineConstraints": [],
     "versionDefines": []
 }

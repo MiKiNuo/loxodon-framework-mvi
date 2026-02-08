@@ -1,5 +1,6 @@
 using Loxodon.Framework.Binding;
 using Loxodon.Framework.Binding.Builder;
+using Loxodon.Framework.Contexts;
 using Loxodon.Framework.Views;
 using UnityEngine.UI;
 using MVI.Components;
@@ -22,7 +23,7 @@ namespace Loxodon.Framework.Examples.Components.CounterCard.Views
             {
                 return;
             }
-
+            
             isBound = true;
             BindingSet<CounterCardView, CounterCardViewModel> bindingSet =
                 this.CreateBindingSet<CounterCardView, CounterCardViewModel>();

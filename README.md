@@ -147,5 +147,17 @@ MviDiagnostics.Log = msg => UnityEngine.Debug.Log(msg);
 编辑器下测试示例位于：
 - `MVI/Assets/Tests/Editor/MviStoreTests.cs`
 
+### FairyGUI 适配示例
+示例代码位于：
+- `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/FairyCounterExample.cs`
+- `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/FairyComposedDashboardView.cs`
+启用条件：
+- 在 Unity 的 `Scripting Define Symbols` 中添加 `MVI_FAIRYGUI`
+说明：
+- `MviFairyView` 会先加载 `PackagePaths`（如 `UI/xxx`），再通过 `PackageName/ComponentName` 创建 UI
+- 支持两种模式：`UIPanel`（Inspector 配置）或 `GRoot`（代码创建并挂载）
+- 若要对接 AssetBundle / YooAsset，可实现 `IFairyPackageLoader` 并覆写 `PackageLoader`
+ - FairyGUI 包示例路径：`MVI/Assets/Res/ComposedDashboardWindow`（Editor 下可直接 `Assets/...` 路径加载）
+
 ## Demo演示
 打开Unity工程找到Samples\Loxodon Framework\2.0.0\Examples\Launcher场景，直接运行即可，该项目工程是在官方Demo基础上进行修改，具体可以进行对比，使用MVI架构后ViewModel和View之间只存在绑定关系不存在业务逻辑关系，所有的业务逻辑都分发到Intent中

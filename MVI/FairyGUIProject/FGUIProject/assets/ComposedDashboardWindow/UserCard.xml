@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<component size="400,140">
+  <displayList>
+    <text id="n0_sd1v" name="UserNameText" xy="177,23" size="31,19" group="n3_sd1v" fontSize="12" text="User"/>
+    <text id="n1_sd1v" name="LevelText" xy="177,58" size="29,19" group="n3_sd1v" fontSize="12" text="Lv.1"/>
+    <component id="n2_sd1v" name="SelectButton" src="sd1v5" fileName="SelectButton.xml" xy="147,96" group="n3_sd1v">
+      <Button title="Select"/>
+    </component>
+    <group id="n3_sd1v" name="info" xy="147,23" size="100,92" advanced="true">
+      <relation target="" sidePair="width-width,height-height"/>
+    </group>
+  </displayList>
+</component>

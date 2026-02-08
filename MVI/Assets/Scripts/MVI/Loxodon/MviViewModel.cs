@@ -1,3 +1,4 @@
+using System;
 using System.Threading;
 using Loxodon.Framework.ViewModels;
 using R3;
@@ -13,6 +14,16 @@ namespace MVI
         protected Store Store { get; private set; }
         private readonly CompositeDisposable _disposables = new();
         private bool _disposeStore;
+
+        // 当前状态快照（避免 View 直接访问 Store）。
+        public IState CurrentState => Store?.CurrentState;
+
+        // 状态变化事件（供非绑定体系的 View 使用，例如 FairyGUI）。
+        public event Action<IState> StateChanged;
+        // Effect 事件（一次性事件）。
+        public event Action<IMviEffect> EffectEmitted;
+        // Error 事件（统一错误入口）。
+        public event Action<MviErrorEffect> ErrorEmitted;
 
         // 绑定 Store 并订阅 State。
         public void BindStore(Store store, bool disposeStore = true)
@@ -44,6 +55,7 @@ namespace MVI
             }
             
             MviStateMapper.TryMap(state, this);
+            StateChanged?.Invoke(state);
         }
 
         // Effect 回调：一次性事件入口。
@@ -53,6 +65,8 @@ namespace MVI
             {
                 return;
             }
+
+            EffectEmitted?.Invoke(effect);
         }
 
         // Error 回调：统一错误入口。
@@ -62,6 +76,8 @@ namespace MVI
             {
                 return;
             }
+
+            ErrorEmitted?.Invoke(error);
         }
 
         protected override void Dispose(bool disposing)
@@ -113,6 +129,9 @@ namespace MVI
         protected new Store<TState, TIntent, TResult> Store { get; private set; }
 
         protected ReadOnlyReactiveProperty<TState> State => Store?.State;
+
+        // 当前状态快照（强类型）。
+        public new TState CurrentState => Store?.CurrentState;
 
         public new void BindStore(Store<TState, TIntent, TResult> store, bool disposeStore = true)
         {

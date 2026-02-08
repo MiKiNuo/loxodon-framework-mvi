@@ -210,6 +210,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: e7347d981565b174499bd055f67b4d1a, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  demoUiKind: 0
+  usePlayerPrefsOverride: 0
+  demoUiKindPrefKey: MVI.DemoUiKind
+  enableRuntimeToggle: 0
+  toggleKey: 113
 --- !u!4 &831322244
 Transform:
   m_ObjectHideFlags: 0

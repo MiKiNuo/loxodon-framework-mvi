@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<component size="400,140">
+  <displayList>
+    <text id="n0_sd1v" name="LabelText" xy="181,21" size="32,19" group="n2_sd1v" fontSize="12" text="Click"/>
+    <component id="n3_sd1v" name="IncrementButton" src="sd1v2" fileName="IncrementButton.xml" xy="155,94" group="n2_sd1v">
+      <Button title="+1"/>
+    </component>
+    <text id="n1_sd1v" name="CountText" xy="182,56" size="36,19" group="n2_sd1v" fontSize="12" align="center" vAlign="middle" autoSize="none" bold="true" text="0"/>
+    <group id="n2_sd1v" name="title" xy="155,21" size="100,92" advanced="true">
+      <relation target="" sidePair="width-width,height-height"/>
+    </group>
+  </displayList>
+</component>

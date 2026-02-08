@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<component size="400,80">
+  <displayList>
+    <text id="n0_sd1v" name="MessageText" xy="179,35" size="41,19" fontSize="12" align="center" vAlign="middle" text="Ready">
+      <relation target="" sidePair="width-width,height-height"/>
+    </text>
+  </displayList>
+</component>
