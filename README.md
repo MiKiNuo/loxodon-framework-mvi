@@ -4,8 +4,7 @@ https://github.com/vovgou/loxodon-framework
 ### MVI架构图如下
 ![alt text](mad-arch-ui-udf.png)
 
-### 本项目的 MVI 落地架构图（便于快速上手）
-#### 流程图（纯文本）
+**架构概览（流程图）**
 ```
 用户交互
    │
@@ -37,7 +36,7 @@ ComposedWindowBase
    └─ 事件路由表 ↔ 组件A / 组件B（Props/Events）
 ```
 
-#### 类关系图（纯文本）
+**类关系图**
 ```
 IIntent
 IMviResult
@@ -62,148 +61,78 @@ ComposedWindowBase : Window
   ├─ 事件输出：ComponentEvent
   └─ 组合 DSL：Compose / Component / WithProps / On / CompareProps
 ```
-MVI架构是谷歌最新的UI架构，是在MVVM基础上解决一些生产环境的痛点而产生单项数据、响应式、不可变状态的新型框架，目前主要是在Android原生上使用的比较多，Unity以及其他方面基本没有，所以才创建了loxodon-framework-mvi库。
-###
-loxodon-framework-mvi在loxodon-framework框架上进行扩展实现MVI架构，没有修改loxodon-framework任何代码，通过Nuget进行包管理引用loxodon-framework，实现了响应式编程、单数据流、不可变状态，主要依赖如下开源库实现：
-### R3 https://github.com/Cysharp/R3
-### loxodon-framework-mvi 类介绍
-#### IIntent意图类，用于执行一系列的意图
-#### IMviResult结果类，用于生成意图的结果
-#### IState状态类，表示UI进行显式的状态信息
-#### IMviEffect一次性事件类（Toast/弹窗/导航等）
-#### MviViewModel类是继承loxodon-framework框架的ViewModelBase类，ViewModelBase类是用来处理业务逻辑的，MVVM所有的业务逻辑基本都写在ViewModel中
-#### Store类是管理状态的更新，用于生成新的状态
 
-## 使用教程
-### 1、每一个意图都需于要实现Intent接口
-### 2、UI界面需要刷新的状态，每个状态都要实现IState接口,状态类最好使用Record类型使其不可变，
-### 3、每个模块或者说每个界面都要有一个Store进行对状态的管理，所以需要继承Store类，具体可以参考Demo
-### 4、View和ViewModel绑定具体教程参考loxodon-framework框架，ViewModel只用绑定相关UI属性和对应点击事件即可,在ViewModel的构造函数中执行绑定BindStore方法，具体看LoginViewModel的构造函数，绑定按钮事件需要执行EmitIntent方法触发意图，具体看Login()方法
-具体实现代码可以看Demo中的登录实例的代码，其中加载进度的代码是loxodon-framework框架Demo的并没有进行修改，登录Demo分别定义了Intent、State、Store、ViewModel、View、Const文件夹
-### 5、组合式组件化（新增）
-新增组合式组件化基础能力，位于：
-- `MVI/Assets/Scripts/MVI/Core/Components`（命名空间：`MVI.Components`）：`IViewBinder`、`IPropsReceiver<T>`、`IForceUpdateProps`、`ComponentEvent`
-- `MVI/Assets/Scripts/MVI/Loxodon/Composed`（命名空间：`MVI.Composed`）：`ComposedWindowBase`（组件注册表、事件路由表、props diff、生命周期管理、声明式组合 DSL）
+## 架构与模块
+**核心接口**
+1. `IIntent`：意图
+2. `IMviResult`：结果
+3. `IState`：状态（建议使用 Record）
+4. `IMviEffect`：一次性事件（Toast/弹窗/导航）
 
-示例 Demo 代码位于：
-- `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/Composed/Views/ComposedDashboardWindow.cs`
-- 组件示例：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/Components/*`
-- 组件 Prefab：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Resources/UI/Components/*`
-- 组合页 Prefab：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Resources/UI/Composed/ComposedDashboard.prefab`
+**核心类**
+1. `MviViewModel`：继承 `ViewModelBase`，负责绑定 Store 与发射 Intent
+2. `Store`：状态管理与结果处理
 
-#### 如何切换原来的登录/注册 Demo
-启动入口在 `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Launcher.cs`：
-- 组合式 Demo（当前）：加载 `ComposedDashboardWindow` 与资源 `UI/Composed/ComposedDashboard`
-- 原登录/注册 Demo：改回 `StartupWindow` 与资源 `UI/Startup/Startup`
+**组合式组件化**
+1. 基础组件：`MVI/Assets/Scripts/MVI/Core/Components`
+2. 组合式基类：`MVI/Assets/Scripts/MVI/Loxodon/Composed`
+3. 示例组件：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/Components`
 
-示例切换代码：
-```
-// 组合式 Demo
-ComposedDashboardWindow window = locator.LoadWindow<ComposedDashboardWindow>(winContainer, "UI/Composed/ComposedDashboard");
+## Demo使用方法
+**入口场景**
+1. 打开 `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Launcher.unity`
+2. 运行即可
 
-// 原登录/注册 Demo
-StartupWindow window = locator.LoadWindow<StartupWindow>(winContainer, "UI/Startup/Startup");
-```
+**UGUI / FairyGUI 切换**
+在 `Launcher` 组件上设置：
+1. `demoUiKind = UGUI`：运行 UGUI 组合式 Demo
+2. `demoUiKind = FairyGUI`：运行 FairyGUI 组合式 Demo
 
-## 新增能力与扩展
-### 泛型 Store / MviResult
-使用 `Store<TState, TIntent, TResult>` 与 `MviResult<T>`，减少强制转换与运行期错误。
+可选开关：
+1. `enableRuntimeToggle` + `toggleKey`：运行时按键切换
+2. `usePlayerPrefsOverride`：通过 `PlayerPrefs` 覆盖默认值
 
-### Effects 与错误通道
-一次性事件通过 `IMviEffect` 发送，避免污染 State。错误统一通过 `MviErrorEffect` 暴露：
-- `Store.Effects`：业务 Effect（Toast/导航等）
-- `Store.Errors`：标准化错误流
+**UGUI Demo 位置**
+1. 组合式 Demo 入口：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/Composed/Views/ComposedDashboardWindow.cs`
+2. 组合式页 Prefab：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Resources/UI/Composed/ComposedDashboard.prefab`
+3. 组件 Prefab：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Resources/UI/Components`
 
-### Intent 并发与取消
-Store 支持并发策略与取消：
-- `ProcessingMode`：`Switch/Sequential/Parallel/SequentialParallel` 等
-- `MaxConcurrent`：并发上限
-- `EmitIntent(intent, cancellationToken)`：可取消意图
+**FairyGUI Demo 位置**
+1. 组合式 Demo 入口：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/Composed/Views/FairyComposedDashboardView.cs`
+2. 组合式子组件：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/Composed/Components`
+3. 计数器 Demo：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/Counter/Views/FairyCounterView.cs`
+4. FairyGUI 自动生成代码：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/ComposedDashboardWindow`
 
-### 初始状态
-Store 可覆写 `CreateInitialState()` 或 `InitialState`（泛型 Store）来提供初始状态。
-
-### 可定制映射规则
-通过特性控制映射：
-- `[MviIgnore]`：忽略该属性
-- `[MviMap("OtherName")]`：自定义映射名（可用在 State 或 ViewModel）
-
-### 诊断与可观测性
-使用 `MviDiagnostics` 统一记录 Intent/Result/State/Effect 流程：
-```
-MviDiagnostics.Enabled = true;
-MviDiagnostics.Log = msg => UnityEngine.Debug.Log(msg);
-```
-
-### 程序集拆分（asmdef）
-已将核心与 UI 框架适配拆分为独立程序集：
-- `MVI.Core`：核心运行时（依赖 `R3.Unity`）
-- `MVI.Loxodon`：Loxodon 适配（依赖 `MVI.Core`、`R3.Unity`、`Loxodon.Framework`）
-- `MVI.Examples`：示例代码（依赖 `MVI.Core`、`MVI.Loxodon`、`Loxodon.Framework`、`Loxodon.Log`）
-- `MVI.Tests`：编辑器测试（依赖 `MVI.Core`、`MVI.Loxodon`、`R3.Unity`、Unity TestRunner）
-- `MVI.FairyGUI`：FairyGUI 适配与 Loxodon 绑定扩展（依赖 `MVI.Core`、`MVI.Loxodon`、`Loxodon.Framework`、`FairyGUI`）
-
-### 测试示例
-编辑器下测试示例位于：
-- `MVI/Assets/Tests/Editor/MviStoreTests.cs`
-
-### FairyGUI 适配与使用
-#### 1. Demo 切换（UGUI / FairyGUI）
-打开 `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Launcher.unity`，在 `Launcher` 组件上设置：
-- `demoUiKind = UGUI`：运行 UGUI 组合式 Demo
-- `demoUiKind = FairyGUI`：运行 FairyGUI 组合式 Demo
-
-可选：
-- `enableRuntimeToggle` + `toggleKey`：运行时按键切换
-- `usePlayerPrefsOverride`：用 `PlayerPrefs` 覆盖默认配置
-
-#### 2. 绑定初始化（必需）
-在 `Launcher.Awake()` 中初始化：
+**FairyGUI 初始化（必需）**
 ```
 BindingServiceBundle bundle = new BindingServiceBundle(context.GetContainer());
 bundle.Start();
 FairyGUIBindingServiceBundle fairyBundle = new FairyGUIBindingServiceBundle(context.GetContainer());
 fairyBundle.Start();
 ```
-这一步确保 FairyGUI 的 `GButton.onClick` 等事件可以被 Loxodon 绑定识别。
 
-#### 3. FairyGUI 资源加载
-Editor 下：
+**FairyGUI 资源加载（Editor）**
 ```
 UIPackage.AddPackage("Assets/Res/ComposedDashboardWindow");
 ComposedDashboardWindowBinder.BindAll();
 ```
-运行时（YooAsset 接入后）：
-- 使用 YooAsset 加载 AssetBundle
-- `UIPackage.AddPackage(bundle)`
-- 再调用 `ComposedDashboardWindowBinder.BindAll()`
 
-#### 4. FairyGUI Demo 目录
-- 组合式 Demo 入口：  
-  `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/Composed/Views/FairyComposedDashboardView.cs`
-- 组合式子组件 View：  
-  `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/Composed/Components/*/Views`
-- 计数器 Demo：  
-  `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/Counter/Views/FairyCounterView.cs`
-- FairyGUI 自动生成代码（Binder + UI 类）：  
-  `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/ComposedDashboardWindow/*`
+## 扩展能力（摘要）
+1. 泛型 Store / MviResult：`Store<TState, TIntent, TResult>` / `MviResult<T>`
+2. Effects 与错误通道：`Store.Effects` / `Store.Errors`
+3. Intent 并发与取消：`ProcessingMode` / `EmitIntent(intent, cancellationToken)`
+4. 映射规则：`[MviIgnore]` / `[MviMap("OtherName")]`
+5. 诊断：`MviDiagnostics`
 
-#### 5. 组合式页面布局（策略模式）
-布局策略位于：
-`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/Composed/Layouts`
+## 组合式页面布局（FairyGUI）
+布局策略目录：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/Composed/Layouts`
 
-已内置策略：
-- `VerticalCenter`
-- `LeftRightSplit`
-- `VariableSpacingVertical`
-- `Grid`
-- `AbsolutePosition`
-- `PlaceholderAlign`
+内置策略：
+1. `VerticalCenter`
+2. `LeftRightSplit`
+3. `VariableSpacingVertical`
+4. `Grid`
+5. `AbsolutePosition`
+6. `PlaceholderAlign`
 
-在 `FairyComposedDashboardView` 上通过 `layoutKind` 选择策略，并可配置参数；支持运行时 `SwitchLayout` / `RebuildLayout`。
-
-#### 6. 关于 GLoader
-FairyGUI 组合式 Demo 默认**不使用 GLoader**加载组件，而是直接 `AddChild` 挂载组件，以保证点击命中与事件响应稳定。
-
-## Demo演示
-打开Unity工程找到Samples\Loxodon Framework\2.0.0\Examples\Launcher场景，直接运行即可，该项目工程是在官方Demo基础上进行修改，具体可以进行对比，使用MVI架构后ViewModel和View之间只存在绑定关系不存在业务逻辑关系，所有的业务逻辑都分发到Intent中
+`FairyComposedDashboardView` 支持 `layoutKind` 切换策略，并提供 `SwitchLayout` / `RebuildLayout` 运行时接口。
