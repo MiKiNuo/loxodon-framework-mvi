@@ -72,6 +72,14 @@ ComposedWindowBase : Window
 **核心类**
 1. `MviViewModel`：继承 `ViewModelBase`，负责绑定 Store 与发射 Intent
 2. `Store`：状态管理与结果处理
+3. `StoreMiddlewareContext / IStoreMiddleware`：Store 中间件扩展点（日志、鉴权、重试、埋点）
+4. `IntentProcessingPolicy`：按 Intent 类型配置并发策略（Queue/Drop/Switch/Parallel）
+5. `MviSelector`：Selector 记忆化工具，降低重复计算与无效刷新
+6. `IStoreStatePersistence`：状态持久化插件接口（支持恢复与迁移）
+7. `MviDevTools`：时间线调试工具（Intent/Result/State/Effect/Error、Replay、Time-travel）
+8. `IMviErrorStrategy / MviErrorDecision`：全局错误策略（重试、忽略、回退、抛出）
+9. `Store.UndoState / RedoState / TryTimeTravelToHistoryIndex`：状态历史回退能力
+10. `StoreTestKit`：Store 测试辅助 DSL（采集状态、等待条件、快速发射 Intent）
 
 **组合式组件化**
 1. 基础组件：`MVI/Assets/Scripts/MVI/Core/Components`
@@ -122,6 +130,26 @@ fairyBundle.Start();
 UIPackage.AddPackage("Assets/Res/ComposedDashboardWindow");
 ComposedDashboardWindowBinder.BindAll();
 ```
+
+## 业务侧接入示例（中间件/错误策略/DevTools）
+**示例代码位置**
+1. 集成安装器：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/MviIntegration/MviBusinessIntegrationInstaller.cs`
+2. 业务中间件：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/MviIntegration/LoginIntentAuditMiddleware.cs`
+3. 接入入口：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Launcher.cs`
+4. Store 挂中间件示例：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/Logins/ViewModels/LoginViewModel.cs`
+
+**入口开关（Launcher Inspector）**
+1. `enableMviDiagnostics`：开启 `MviDiagnostics` 链路日志
+2. `enableMviDevTools` + `mviDevToolsMaxEvents`：开启 DevTools 时间线并设置容量
+3. `enableBusinessErrorStrategy` + `businessErrorRetryCount` + `businessErrorRetryDelayMs`：开启全局错误策略与重试参数
+4. `enableLoginAuditMiddleware`：是否给 `LoginStore` 注入登录审计中间件
+5. `autoDumpLoginStoreTimeline`：登录完成后自动打印时间线快照
+
+**业务接入要点**
+1. 在入口统一安装：`MviBusinessIntegrationInstaller.Install(...)`
+2. 在具体业务 Store 创建处调用 `store.UseMiddleware(new LoginIntentAuditMiddleware())`
+3. 通过 `BusinessMviIntegrationRuntime.DumpTimeline(store, tag)` 输出时间线
+4. 全局错误策略走 `IMviErrorStrategy`，可按阶段返回 `Retry/Ignore/Emit/Fallback`
 
 ## 扩展能力（摘要）
 1. 泛型 Store / MviResult：`Store<TState, TIntent, TResult>` / `MviResult<T>`

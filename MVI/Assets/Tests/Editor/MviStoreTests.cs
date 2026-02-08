@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
@@ -121,6 +122,175 @@ namespace MVI.Tests
             public void Push(MapState state)
             {
                 UpdateState(state);
+            }
+        }
+
+        private sealed class MiddlewareStore : Store<TestState, ITestIntent, TestResult>
+        {
+            public readonly List<string> Steps = new();
+
+            protected override TestState InitialState => new TestState { Value = 0, IsUpdateNewState = true };
+
+            protected override void ConfigureMiddlewares(IList<IStoreMiddleware> middlewares)
+            {
+                middlewares.Add(new DelegateStoreMiddleware(async (context, next) =>
+                {
+                    Steps.Add($"before:{context.Intent.GetType().Name}");
+                    var result = await next(context);
+                    Steps.Add($"after:{context.Intent.GetType().Name}");
+                    return result;
+                }));
+            }
+
+            protected override TestState Reduce(TestResult result)
+            {
+                return new TestState { Value = result.Value, IsUpdateNewState = true };
+            }
+        }
+
+        private sealed class SlowSetValueIntent : ITestIntent
+        {
+            private readonly int _value;
+            private readonly int _delayMs;
+
+            public SlowSetValueIntent(int value, int delayMs)
+            {
+                _value = value;
+                _delayMs = delayMs;
+            }
+
+            public async ValueTask<IMviResult> HandleIntentAsync(CancellationToken ct = default)
+            {
+                await Task.Delay(_delayMs, ct);
+                return new TestResult(_value);
+            }
+        }
+
+        private sealed class PolicyStore : Store<TestState, ITestIntent, TestResult>
+        {
+            protected override TestState InitialState => new TestState { Value = 0, IsUpdateNewState = true };
+
+            protected override AwaitOperation ProcessingMode => AwaitOperation.Sequential;
+
+            protected override void ConfigureIntentProcessingPolicies(IDictionary<Type, IntentProcessingPolicy> policies)
+            {
+                // 同类慢意图走 Switch，后发请求会取消前一个请求。
+                policies[typeof(SlowSetValueIntent)] = IntentProcessingPolicy.Switch();
+            }
+
+            protected override TestState Reduce(TestResult result)
+            {
+                return new TestState { Value = result.Value, IsUpdateNewState = true };
+            }
+        }
+
+        private sealed class TestStateValueComparer : IEqualityComparer<TestState>
+        {
+            public bool Equals(TestState x, TestState y)
+            {
+                if (ReferenceEquals(x, y))
+                {
+                    return true;
+                }
+
+                if (x == null || y == null)
+                {
+                    return false;
+                }
+
+                return x.Value == y.Value;
+            }
+
+            public int GetHashCode(TestState obj)
+            {
+                return obj?.Value ?? 0;
+            }
+        }
+
+        private sealed class PersistentStore : Store<TestState, ITestIntent, TestResult>
+        {
+            public static string Key { get; set; } = "MVI.Tests.PersistentStore";
+
+            protected override string PersistenceKey => Key;
+
+            protected override TestState InitialState => new TestState { Value = 0, IsUpdateNewState = true };
+
+            protected override TestState Reduce(TestResult result)
+            {
+                return new TestState { Value = result.Value, IsUpdateNewState = true };
+            }
+        }
+
+        private sealed class MigratingPersistentStore : Store<TestState, ITestIntent, TestResult>
+        {
+            public static string Key { get; set; } = "MVI.Tests.MigratingPersistentStore";
+
+            protected override string PersistenceKey => Key;
+
+            protected override TestState InitialState => new TestState { Value = 0, IsUpdateNewState = true };
+
+            protected override IState MigratePersistedState(IState persistedState)
+            {
+                if (persistedState is TestState typed)
+                {
+                    return new TestState { Value = typed.Value + 10, IsUpdateNewState = true };
+                }
+
+                return persistedState;
+            }
+
+            protected override TestState Reduce(TestResult result)
+            {
+                return new TestState { Value = result.Value, IsUpdateNewState = true };
+            }
+        }
+
+        private sealed class RetryThenSuccessIntent : ITestIntent
+        {
+            private readonly int _value;
+            private int _remainingFailures;
+
+            public RetryThenSuccessIntent(int value, int failTimes)
+            {
+                _value = value;
+                _remainingFailures = failTimes;
+            }
+
+            public ValueTask<IMviResult> HandleIntentAsync(CancellationToken ct = default)
+            {
+                if (_remainingFailures > 0)
+                {
+                    _remainingFailures--;
+                    throw new InvalidOperationException("retry-me");
+                }
+
+                return new ValueTask<IMviResult>(new TestResult(_value));
+            }
+        }
+
+        private sealed class RetryOnceErrorStrategy : IMviErrorStrategy
+        {
+            public ValueTask<MviErrorDecision> DecideAsync(MviErrorContext context, CancellationToken cancellationToken = default)
+            {
+                if (context == null)
+                {
+                    return new ValueTask<MviErrorDecision>(MviErrorDecision.Emit());
+                }
+
+                if (context.Phase == MviErrorPhase.IntentProcessing && context.Attempt == 0)
+                {
+                    return new ValueTask<MviErrorDecision>(MviErrorDecision.Retry(retryCount: 1, emitError: true));
+                }
+
+                return new ValueTask<MviErrorDecision>(MviErrorDecision.Emit());
+            }
+        }
+
+        private sealed class IgnoreErrorStrategy : IMviErrorStrategy
+        {
+            public ValueTask<MviErrorDecision> DecideAsync(MviErrorContext context, CancellationToken cancellationToken = default)
+            {
+                return new ValueTask<MviErrorDecision>(MviErrorDecision.Ignore());
             }
         }
 
@@ -252,6 +422,261 @@ namespace MVI.Tests
             viewModel.Dispose();
 
             Assert.IsNull(viewModel.ExposedStore);
+        }
+
+        [UnityTest]
+        public IEnumerator StoreMiddleware_ShouldWrapIntentPipeline()
+        {
+            var store = new MiddlewareStore();
+
+            store.EmitIntent(new SetValueIntent(8));
+            yield return null;
+
+            Assert.AreEqual(8, store.CurrentState.Value);
+            Assert.AreEqual(2, store.Steps.Count);
+            Assert.AreEqual("before:SetValueIntent", store.Steps[0]);
+            Assert.AreEqual("after:SetValueIntent", store.Steps[1]);
+        }
+
+        [UnityTest]
+        public IEnumerator IntentPolicy_Switch_ShouldCancelPreviousSameIntentType()
+        {
+            var store = new PolicyStore();
+            var states = new List<int>();
+            store.State.Subscribe(state => states.Add(state.Value));
+
+            store.EmitIntent(new SlowSetValueIntent(1, 240));
+            yield return null;
+            store.EmitIntent(new SlowSetValueIntent(2, 20));
+
+            var timeout = DateTime.UtcNow.AddSeconds(2);
+            while (DateTime.UtcNow < timeout && store.CurrentState.Value != 2)
+            {
+                yield return null;
+            }
+
+            Assert.AreEqual(2, store.CurrentState.Value);
+            Assert.IsFalse(states.Contains(1));
+        }
+
+        [Test]
+        public void Selector_Memoize_ShouldReuseSelectedValue()
+        {
+            var invoked = 0;
+            var selector = MviSelector.Memoize<TestState, int>(
+                state =>
+                {
+                    invoked++;
+                    return state?.Value ?? 0;
+                },
+                stateComparer: new TestStateValueComparer());
+
+            var first = selector(new TestState { Value = 5, IsUpdateNewState = true });
+            var second = selector(new TestState { Value = 5, IsUpdateNewState = true });
+            var third = selector(new TestState { Value = 6, IsUpdateNewState = true });
+
+            Assert.AreEqual(5, first);
+            Assert.AreEqual(5, second);
+            Assert.AreEqual(6, third);
+            Assert.AreEqual(2, invoked);
+        }
+
+        [UnityTest]
+        public IEnumerator Persistence_ShouldRestoreLastState()
+        {
+            var previousPersistence = MviStoreOptions.DefaultStatePersistence;
+            var persistence = new InMemoryStoreStatePersistence();
+            MviStoreOptions.DefaultStatePersistence = persistence;
+            PersistentStore.Key = "MVI.Tests.Persistence.Restore";
+
+            try
+            {
+                var first = new PersistentStore();
+                first.EmitIntent(new SetValueIntent(9));
+                yield return null;
+                Assert.AreEqual(9, first.CurrentState.Value);
+                first.Dispose();
+
+                var second = new PersistentStore();
+                yield return null;
+                Assert.AreEqual(9, second.CurrentState.Value);
+                second.Dispose();
+            }
+            finally
+            {
+                MviStoreOptions.DefaultStatePersistence = previousPersistence;
+            }
+        }
+
+        [Test]
+        public void Persistence_Migrate_ShouldApplyMigrationHook()
+        {
+            var previousPersistence = MviStoreOptions.DefaultStatePersistence;
+            var persistence = new InMemoryStoreStatePersistence();
+            MviStoreOptions.DefaultStatePersistence = persistence;
+            MigratingPersistentStore.Key = "MVI.Tests.Persistence.Migrate";
+            persistence.Save(MigratingPersistentStore.Key, new TestState { Value = 7, IsUpdateNewState = true });
+
+            try
+            {
+                var store = new MigratingPersistentStore();
+                Assert.AreEqual(17, store.CurrentState.Value);
+                store.Dispose();
+            }
+            finally
+            {
+                MviStoreOptions.DefaultStatePersistence = previousPersistence;
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator DevTools_TimelineReplayAndTimeTravel_ShouldWork()
+        {
+            var previousEnabled = MviDevTools.Enabled;
+            var previousMaxEvents = MviDevTools.MaxEventsPerStore;
+            MviDevTools.Enabled = true;
+            MviDevTools.MaxEventsPerStore = 200;
+
+            try
+            {
+                var store = new TestStoreNoEffect();
+                store.ClearTimeline();
+
+                store.EmitIntent(new SetValueIntent(1));
+                yield return null;
+                store.EmitIntent(new SetValueIntent(2));
+                yield return null;
+
+                var timeline = store.GetTimelineSnapshot();
+                Assert.IsTrue(timeline.Any(entry => entry.Kind == MviTimelineEventKind.Intent));
+                Assert.IsTrue(timeline.Any(entry => entry.Kind == MviTimelineEventKind.Result));
+                Assert.IsTrue(timeline.Any(entry => entry.Kind == MviTimelineEventKind.State));
+
+                long sequenceForValueOne = 0;
+                for (var i = 0; i < timeline.Count; i++)
+                {
+                    if (timeline[i].Kind == MviTimelineEventKind.State
+                        && timeline[i].Payload is TestState state
+                        && state.Value == 1)
+                    {
+                        sequenceForValueOne = timeline[i].Sequence;
+                        break;
+                    }
+                }
+
+                Assert.Greater(sequenceForValueOne, 0);
+                Assert.IsTrue(store.TryTimeTravelToTimelineSequence(sequenceForValueOne));
+                Assert.AreEqual(1, store.CurrentState.Value);
+
+                var replayTask = store.ReplayIntentsAsync().AsTask();
+                while (!replayTask.IsCompleted)
+                {
+                    yield return null;
+                }
+
+                Assert.AreEqual(2, replayTask.Result);
+                Assert.AreEqual(2, store.CurrentState.Value);
+                store.Dispose();
+            }
+            finally
+            {
+                MviDevTools.Enabled = previousEnabled;
+                MviDevTools.MaxEventsPerStore = previousMaxEvents;
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator GlobalErrorStrategy_Retry_ShouldRecoverIntent()
+        {
+            var previousStrategy = MviStoreOptions.DefaultErrorStrategy;
+            MviStoreOptions.DefaultErrorStrategy = new RetryOnceErrorStrategy();
+            try
+            {
+                var store = new TestStoreNoEffect();
+                var errors = new List<MviErrorEffect>();
+                store.Errors.Subscribe(errors.Add);
+
+                store.EmitIntent(new RetryThenSuccessIntent(12, failTimes: 1));
+
+                var timeout = DateTime.UtcNow.AddSeconds(2);
+                while (DateTime.UtcNow < timeout && store.CurrentState.Value != 12)
+                {
+                    yield return null;
+                }
+
+                Assert.AreEqual(12, store.CurrentState.Value);
+                Assert.IsNotEmpty(errors);
+                store.Dispose();
+            }
+            finally
+            {
+                MviStoreOptions.DefaultErrorStrategy = previousStrategy;
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator GlobalErrorStrategy_Ignore_ShouldSuppressErrorChannel()
+        {
+            var previousStrategy = MviStoreOptions.DefaultErrorStrategy;
+            MviStoreOptions.DefaultErrorStrategy = new IgnoreErrorStrategy();
+            try
+            {
+                var store = new TestStoreNoEffect();
+                var errors = new List<MviErrorEffect>();
+                store.Errors.Subscribe(errors.Add);
+
+                store.EmitIntent(new ThrowIntent());
+                yield return null;
+
+                Assert.IsEmpty(errors);
+                store.Dispose();
+            }
+            finally
+            {
+                MviStoreOptions.DefaultErrorStrategy = previousStrategy;
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator UndoRedo_StateHistory_ShouldWork()
+        {
+            var store = new TestStoreNoEffect();
+            store.EmitIntent(new SetValueIntent(1));
+            yield return null;
+            store.EmitIntent(new SetValueIntent(2));
+            yield return null;
+
+            Assert.IsTrue(store.CanUndo);
+            Assert.IsTrue(store.UndoState());
+            Assert.AreEqual(1, store.CurrentState.Value);
+            Assert.IsTrue(store.CanRedo);
+            Assert.IsTrue(store.RedoState());
+            Assert.AreEqual(2, store.CurrentState.Value);
+            Assert.GreaterOrEqual(store.StateHistoryCount, 3);
+            store.Dispose();
+        }
+
+        [UnityTest]
+        public IEnumerator StoreTestKit_ShouldCaptureAndWaitState()
+        {
+            var store = new TestStoreNoEffect();
+            using var kit = store.CreateTestKit();
+
+            kit.Emit(new SetValueIntent(21));
+            var waitTask = kit.WaitForStateAsync(
+                    state => state is TestState typed && typed.Value == 21,
+                    timeoutMs: 2000)
+                .AsTask();
+
+            while (!waitTask.IsCompleted)
+            {
+                yield return null;
+            }
+
+            Assert.IsTrue(waitTask.Result);
+            Assert.IsNotEmpty(kit.States);
+            Assert.AreEqual(21, kit.LastStateAs<TestState>()?.Value ?? -1);
+            store.Dispose();
         }
 
         private static bool IsDisposed(Store store)

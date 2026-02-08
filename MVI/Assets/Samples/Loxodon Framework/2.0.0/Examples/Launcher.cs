@@ -52,6 +52,15 @@ namespace Loxodon.Framework.Examples
 
         [Header("Demo 切换")] [SerializeField] private DemoUiKind demoUiKind = DemoUiKind.UGUI;
         [Header("FairyGUI 运行时包路径")] [SerializeField] private string[] runtimeFairyPackagePaths = { "Res/ComposedDashboardWindow", "ComposedDashboardWindow" };
+        [Header("MVI 业务接入示例")]
+        [SerializeField] private bool enableMviDiagnostics = false;
+        [SerializeField] private bool enableMviDevTools = true;
+        [SerializeField] private int mviDevToolsMaxEvents = 256;
+        [SerializeField] private bool enableBusinessErrorStrategy = true;
+        [SerializeField] private int businessErrorRetryCount = 1;
+        [SerializeField] private int businessErrorRetryDelayMs = 120;
+        [SerializeField] private bool enableLoginAuditMiddleware = true;
+        [SerializeField] private bool autoDumpLoginStoreTimeline = false;
 
         // 运行时可注入自定义 Fairy 包加载器（例如 YooAsset）。
         public static IFairyPackageLoader RuntimeFairyPackageLoader { get; set; }
@@ -101,6 +110,17 @@ namespace Loxodon.Framework.Examples
              * to control the interactivity of the view
              */
             GlobalSetting.useBlocksRaycastsInsteadOfInteractable = true;
+
+            // 业务侧 MVI 接入安装：中间件、全局错误策略、DevTools 统一在入口配置。
+            MviBusinessIntegrationInstaller.Install(new BusinessMviIntegrationOptions(
+                enableDiagnostics: enableMviDiagnostics,
+                enableDevTools: enableMviDevTools,
+                devToolsMaxEvents: mviDevToolsMaxEvents,
+                enableGlobalErrorStrategy: enableBusinessErrorStrategy,
+                maxRetryCount: businessErrorRetryCount,
+                retryDelayMs: businessErrorRetryDelayMs,
+                enableLoginAuditMiddleware: enableLoginAuditMiddleware,
+                autoDumpLoginStoreTimeline: autoDumpLoginStoreTimeline));
         }
 
         IEnumerator Start()

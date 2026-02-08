@@ -33,6 +33,8 @@ namespace Loxodon.Framework.Examples
 {
     public class LoginViewModel : MviViewModel<LoginState, ILoginIntent, MviResult<LoginResult>, LoginEffect>
     {
+        // 业务 Store 引用（用于挂载中间件与可选的 DevTools 时间线输出）。
+        private readonly LoginStore loginStore;
         private string username;
         private string password;
 
@@ -62,7 +64,14 @@ namespace Loxodon.Framework.Examples
                 this.interactionFinished.Raise(); /* Request to close the login window */
             });
 
-            BindStore(new LoginStore());
+            // 业务侧接入示例：在 ViewModel 构造阶段给 Store 挂中间件。
+            this.loginStore = new LoginStore();
+            if (BusinessMviIntegrationRuntime.EnableLoginAuditMiddleware)
+            {
+                this.loginStore.UseMiddleware(new LoginIntentAuditMiddleware());
+            }
+
+            BindStore(this.loginStore);
             
         }
         
@@ -120,6 +129,11 @@ namespace Loxodon.Framework.Examples
                     this.toastRequest.Raise(new ToastNotification(toast.Message, toast.Duration));
                     break;
                 case FinishLoginEffect:
+                    if (BusinessMviIntegrationRuntime.AutoDumpLoginStoreTimeline)
+                    {
+                        // DevTools 示例：登录完成后打印当前 Store 的时间线快照。
+                        BusinessMviIntegrationRuntime.DumpTimeline(this.loginStore, nameof(LoginStore));
+                    }
                     this.interactionFinished.Raise();
                     break;
             }
