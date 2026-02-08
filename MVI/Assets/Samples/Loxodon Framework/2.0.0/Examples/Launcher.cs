@@ -26,6 +26,9 @@ using UnityEngine;
 using System;
 using System.Globalization;
 using System.Collections;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Loxodon.Framework.Contexts;
 using Loxodon.Framework.Views;
 using Loxodon.Framework.Binding;
@@ -34,6 +37,7 @@ using Loxodon.Framework.Services;
 using FairyGUI;
 using ComposedDashboardWindow;
 using MVI.Examples.FairyGUI.Composed.Views;
+using MVI.FairyGUI;
 
 namespace Loxodon.Framework.Examples
 {
@@ -47,6 +51,10 @@ namespace Loxodon.Framework.Examples
         }
 
         [Header("Demo 切换")] [SerializeField] private DemoUiKind demoUiKind = DemoUiKind.UGUI;
+        [Header("FairyGUI 运行时包路径")] [SerializeField] private string[] runtimeFairyPackagePaths = { "Res/ComposedDashboardWindow", "ComposedDashboardWindow" };
+
+        // 运行时可注入自定义 Fairy 包加载器（例如 YooAsset）。
+        public static IFairyPackageLoader RuntimeFairyPackageLoader { get; set; }
 
         private ApplicationContext context;
         private Coroutine demoCoroutine;
@@ -101,7 +109,7 @@ namespace Loxodon.Framework.Examples
             if (demoUiKind == DemoUiKind.FairyGUI)
             {
                 // FairyGUI Demo：先加载包、注册扩展，再创建视图。
-                LoadFairyGuiPackages();
+                yield return LoadFairyGuiPackages();
                 var go = new GameObject("FairyGUI-ComposedDashboard");
                 go.AddComponent<FairyComposedDashboardView>();
                 yield return null;
@@ -124,17 +132,83 @@ namespace Loxodon.Framework.Examples
 
         }
 
-        // FairyGUI 包加载：Editor 走 Assets/Res，真机模式由 YooAsset 接管。
-        private static void LoadFairyGuiPackages()
+        // FairyGUI 包加载：默认支持 Editor 与 Resources 路径，外部可注入自定义加载器。
+        private IEnumerator LoadFairyGuiPackages()
         {
-#if UNITY_EDITOR
-            UIPackage.AddPackage("Assets/Res/ComposedDashboardWindow");
-#else
-            // TODO：接入 YooAsset 后在此加载 AssetBundle，并调用 UIPackage.AddPackage(bundle)
-            Debug.LogWarning("运行时请使用 YooAsset 加载 FairyGUI AssetBundle。");
-#endif
+            var loader = RuntimeFairyPackageLoader ?? new LauncherFairyPackageLoader();
+            var task = loader.LoadAsync(BuildFairyPackagePaths(), CancellationToken.None).AsTask();
+            while (!task.IsCompleted)
+            {
+                yield return null;
+            }
+
+            if (task.IsFaulted)
+            {
+                Debug.LogException(task.Exception);
+                yield break;
+            }
+
+            if (task.IsCanceled)
+            {
+                yield break;
+            }
+
             // 注册自定义组件扩展（可在包加载前后调用，确保创建 UI 前已注册）。
             ComposedDashboardWindowBinder.BindAll();
+        }
+
+        private IReadOnlyList<string> BuildFairyPackagePaths()
+        {
+#if UNITY_EDITOR
+            return new[] { "Assets/Res/ComposedDashboardWindow" };
+#else
+            if (runtimeFairyPackagePaths != null && runtimeFairyPackagePaths.Length > 0)
+            {
+                return runtimeFairyPackagePaths;
+            }
+
+            return new[] { "Res/ComposedDashboardWindow", "ComposedDashboardWindow" };
+#endif
+        }
+
+        private sealed class LauncherFairyPackageLoader : IFairyPackageLoader
+        {
+            public ValueTask LoadAsync(IReadOnlyList<string> packagePaths, CancellationToken cancellationToken = default)
+            {
+                if (packagePaths == null || packagePaths.Count == 0)
+                {
+                    return default;
+                }
+
+                var loadedAny = false;
+                Exception lastException = null;
+                for (var i = 0; i < packagePaths.Count; i++)
+                {
+                    var path = packagePaths[i];
+                    if (string.IsNullOrWhiteSpace(path))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        UIPackage.AddPackage(path);
+                        loadedAny = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        lastException = ex;
+                        Debug.LogWarning($"FairyGUI package load failed: {path}");
+                    }
+                }
+
+                if (!loadedAny && lastException != null)
+                {
+                    throw new InvalidOperationException("No FairyGUI package could be loaded.", lastException);
+                }
+
+                return default;
+            }
         }
     }
 }

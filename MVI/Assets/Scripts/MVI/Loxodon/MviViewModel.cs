@@ -12,7 +12,7 @@ namespace MVI
     {
         // 当前 ViewModel 绑定的 Store。
         protected Store Store { get; private set; }
-        private readonly CompositeDisposable _disposables = new();
+        private CompositeDisposable _storeDisposables = new();
         private bool _disposeStore;
 
         // 当前状态快照（避免 View 直接访问 Store）。
@@ -28,22 +28,34 @@ namespace MVI
         // 绑定 Store 并订阅 State。
         public void BindStore(Store store, bool disposeStore = true)
         {
+            if (store == null)
+            {
+                throw new ArgumentNullException(nameof(store));
+            }
+
+            if (ReferenceEquals(Store, store))
+            {
+                _disposeStore = disposeStore;
+                return;
+            }
+
+            DetachStore(disposeExisting: _disposeStore);
             Store = store;
             _disposeStore = disposeStore;
             Store.State
                 .ObserveOnMainThread()
                 .Subscribe(OnStateChanged)
-                .AddTo(_disposables);
+                .AddTo(_storeDisposables);
 
             Store.Effects
                 .ObserveOnMainThread()
                 .Subscribe(OnEffect)
-                .AddTo(_disposables);
+                .AddTo(_storeDisposables);
 
             Store.Errors
                 .ObserveOnMainThread()
                 .Subscribe(OnError)
-                .AddTo(_disposables);
+                .AddTo(_storeDisposables);
         }
 
         // 状态变化回调：默认通过生成的映射器同步属性。
@@ -82,11 +94,7 @@ namespace MVI
 
         protected override void Dispose(bool disposing)
         {
-            _disposables.Dispose();
-            if (_disposeStore)
-            {
-                Store?.Dispose();
-            }
+            DetachStore(disposeExisting: _disposeStore);
 
             base.Dispose(disposing);
         }
@@ -101,6 +109,19 @@ namespace MVI
         protected void EmitIntent(IIntent intent, CancellationToken cancellationToken)
         {
             Store.EmitIntent(intent, cancellationToken);
+        }
+
+        private void DetachStore(bool disposeExisting)
+        {
+            _storeDisposables.Dispose();
+            _storeDisposables = new CompositeDisposable();
+
+            if (disposeExisting)
+            {
+                Store?.Dispose();
+            }
+
+            Store = null;
         }
     }
 
@@ -139,6 +160,12 @@ namespace MVI
             base.BindStore(store, disposeStore);
         }
 
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+            Store = null;
+        }
+
         protected sealed override void OnStateChanged(IState? state)
         {
             base.OnStateChanged(state);
@@ -168,6 +195,12 @@ namespace MVI
         {
             Store = store;
             base.BindStore(store, disposeStore);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+            Store = null;
         }
 
         protected sealed override void OnEffect(IMviEffect effect)

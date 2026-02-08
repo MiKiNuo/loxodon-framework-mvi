@@ -1,83 +1,17 @@
 using System;
-using System.Collections.Generic;
 using Loxodon.Framework.Binding;
 using Loxodon.Framework.Contexts;
 using Loxodon.Framework.Views;
-using UnityEngine;
 using MVI.Components;
+using MVI.Composition;
+using MVI.UIAdapters.UGUI;
+using UnityEngine;
 
 namespace MVI.Composed
 {
     // 组合式窗口基类：统一组件注册、props 传递、事件路由与生命周期管理。
     public abstract class ComposedWindowBase : Window
     {
-        private sealed class ComponentRegistration
-        {
-            public ComponentRegistration(string id, UIView view, object viewModel, Func<object, object, bool> propsComparer)
-            {
-                Id = id;
-                View = view;
-                ViewModel = viewModel;
-                PropsComparer = propsComparer;
-            }
-
-            public string Id { get; }
-            public UIView View { get; }
-            public object ViewModel { get; }
-            public object LastProps { get; set; }
-            public Func<object, object, bool> PropsComparer { get; set; }
-        }
-
-        private sealed class EventRoute
-        {
-            public EventRoute(string componentId, string eventName, Type payloadType, Action<object> handler)
-            {
-                ComponentId = componentId;
-                EventName = eventName;
-                PayloadType = payloadType;
-                Handler = handler;
-            }
-
-            public string ComponentId { get; }
-            public string EventName { get; }
-            public Type PayloadType { get; }
-            public Action<object> Handler { get; }
-        }
-
-        private readonly struct EventRouteKey : IEquatable<EventRouteKey>
-        {
-            public EventRouteKey(string componentId, string eventName)
-            {
-                ComponentId = componentId ?? string.Empty;
-                EventName = eventName ?? string.Empty;
-            }
-
-            public string ComponentId { get; }
-            public string EventName { get; }
-
-            public bool Equals(EventRouteKey other)
-            {
-                return string.Equals(ComponentId, other.ComponentId, StringComparison.Ordinal)
-                    && string.Equals(EventName, other.EventName, StringComparison.Ordinal);
-            }
-
-            public override bool Equals(object obj)
-            {
-                return obj is EventRouteKey other && Equals(other);
-            }
-
-            public override int GetHashCode()
-            {
-                unchecked
-                {
-                    var hash = 17;
-                    hash = (hash * 31) + ComponentId.GetHashCode();
-                    hash = (hash * 31) + EventName.GetHashCode();
-                    return hash;
-                }
-            }
-        }
-
         protected sealed class ComponentRegistryBuilder
         {
             private readonly ComposedWindowBase owner;
@@ -132,13 +66,11 @@ namespace MVI.Composed
         {
             private readonly ComposedWindowBase owner;
             private readonly string componentId;
-            private readonly TViewModel viewModel;
 
             public ComponentBuilder(ComposedWindowBase owner, string componentId, TViewModel viewModel)
             {
                 this.owner = owner;
                 this.componentId = componentId;
-                this.viewModel = viewModel;
             }
 
             // 注入 props，并走自动 diff。
@@ -220,20 +152,33 @@ namespace MVI.Composed
             }
         }
 
+        private readonly CompositionRuntime composition = new();
+        private bool isDestroyed;
+
         // View 定位器（ResourcesViewLocator）。
         protected IUIViewLocator ViewLocator { get; private set; }
-        private readonly Dictionary<string, ComponentRegistration> registry = new();
-        private readonly List<Action> cleanupActions = new();
-        private readonly Dictionary<EventRouteKey, List<EventRoute>> eventRoutes = new();
-        private bool isDestroyed;
+
+        // UGUI 适配器。
+        protected IViewHost ViewHost { get; private set; }
 
         // 全局组件事件通知（可选订阅）。
         public event Action<ComponentEvent> ComponentEventRaised;
 
+        protected ComposedWindowBase()
+        {
+            composition.ComponentEventRaised += OnRuntimeComponentEventRaised;
+        }
+
         protected override void OnCreate(IBundle bundle)
         {
             ViewLocator = Context.GetApplicationContext().GetService<IUIViewLocator>();
+            ViewHost = CreateViewHost();
             OnCompose(bundle);
+        }
+
+        protected virtual IViewHost CreateViewHost()
+        {
+            return new UguiViewHost(ViewLocator);
         }
 
         protected abstract void OnCompose(IBundle bundle);
@@ -277,7 +222,7 @@ namespace MVI.Composed
         // 加载视图。
         protected TView LoadView<TView>(string resourcePath) where TView : UIView, IView
         {
-            return ViewLocator.LoadView<TView>(resourcePath);
+            return ViewHost.Load(typeof(TView), resourcePath) as TView;
         }
 
         // 注册组件并绑定。
@@ -296,66 +241,18 @@ namespace MVI.Composed
             Func<TProps, TProps, bool> comparer)
             where TView : UIView, IView
         {
-            Func<object, object, bool> objectComparer = null;
-            if (comparer != null)
-            {
-                objectComparer = (previous, next) =>
-                {
-                    if (ReferenceEquals(previous, next))
-                    {
-                        return true;
-                    }
-
-                    if (previous == null || next == null)
-                    {
-                        return false;
-                    }
-
-                    if (previous is TProps prevProps && next is TProps nextProps)
-                    {
-                        return comparer(prevProps, nextProps);
-                    }
-
-                    return Equals(previous, next);
-                };
-            }
-
-            return RegisterComponentInternal<TView, TViewModel>(componentId, resourcePath, root, viewModel, objectComparer);
+            return RegisterComponentInternal<TView, TViewModel>(
+                componentId,
+                resourcePath,
+                root,
+                viewModel,
+                comparer == null ? null : WrapPropsComparer(comparer));
         }
 
         // 设置 props 比较器（会清空上一次 props）。
         protected void SetPropsComparer<TProps>(string componentId, Func<TProps, TProps, bool> comparer)
         {
-            if (!registry.TryGetValue(componentId, out var entry))
-            {
-                return;
-            }
-
-            if (comparer == null)
-            {
-                return;
-            }
-
-            entry.LastProps = null;
-            entry.PropsComparer = (previous, next) =>
-            {
-                if (ReferenceEquals(previous, next))
-                {
-                    return true;
-                }
-
-                if (previous == null || next == null)
-                {
-                    return false;
-                }
-
-                if (previous is TProps prevProps && next is TProps nextProps)
-                {
-                    return comparer(prevProps, nextProps);
-                }
-
-                return Equals(previous, next);
-            };
+            composition.SetPropsComparer(componentId, comparer);
         }
 
         private TView RegisterComponentInternal<TView, TViewModel>(
@@ -371,66 +268,41 @@ namespace MVI.Composed
                 throw new ArgumentException("componentId is required.");
             }
 
-            if (registry.TryGetValue(componentId, out var existing))
+            if (composition.HasComponent(componentId))
             {
-                return existing.View as TView;
+                return composition.GetView<TView>(componentId);
             }
 
             var view = LoadView<TView>(resourcePath);
             AttachAndBind(view, root, viewModel);
             TrackView(view);
             TrackDisposable(viewModel as IDisposable);
-            registry[componentId] = new ComponentRegistration(componentId, view, viewModel, propsComparer);
+            composition.TryRegisterComponent(componentId, view, viewModel, propsComparer);
             return view;
         }
 
         // 按组件 ID 获取视图。
-        protected TView GetView<TView>(string componentId) where TView : UIView
+        protected TView GetView<TView>(string componentId) where TView : class
         {
-            if (registry.TryGetValue(componentId, out var entry))
-            {
-                return entry.View as TView;
-            }
-
-            return null;
+            return composition.GetView<TView>(componentId);
         }
 
         // 按组件 ID 获取 ViewModel。
         protected TViewModel GetViewModel<TViewModel>(string componentId) where TViewModel : class
         {
-            if (registry.TryGetValue(componentId, out var entry))
-            {
-                return entry.ViewModel as TViewModel;
-            }
-
-            return null;
+            return composition.GetViewModel<TViewModel>(componentId);
         }
 
         // 挂载视图到父节点。
         protected void AttachView(Component view, Transform root)
         {
-            if (view == null || root == null)
-            {
-                return;
-            }
-
-            view.transform.SetParent(root, false);
-            view.gameObject.SetActive(true);
+            ViewHost.Attach(view, root);
         }
 
         // 设置 DataContext 并绑定。
         protected void BindView(UIView view, object viewModel)
         {
-            if (view == null)
-            {
-                return;
-            }
-
-            view.SetDataContext(viewModel);
-            if (view is IViewBinder binder)
-            {
-                binder.Bind();
-            }
+            ViewHost.Bind(view, viewModel);
         }
 
         // 挂载并绑定。
@@ -443,44 +315,13 @@ namespace MVI.Composed
         // 直接对 ViewModel 注入 props（绕过 diff）。
         protected void ApplyProps<TProps>(object viewModel, TProps props)
         {
-            if (viewModel is IPropsReceiver<TProps> receiver)
-            {
-                receiver.SetProps(props);
-            }
+            CompositionRuntime.ApplyPropsDirect(viewModel, props);
         }
 
         // 对组件注入 props（自动 diff）。
         protected void ApplyProps<TProps>(string componentId, TProps props)
         {
-            if (!registry.TryGetValue(componentId, out var entry))
-            {
-                return;
-            }
-
-            if (props is IForceUpdateProps forceUpdate && forceUpdate.ForceUpdate)
-            {
-                ApplyProps(entry.ViewModel, props);
-                entry.LastProps = props;
-                return;
-            }
-
-            if (entry.LastProps != null)
-            {
-                if (entry.PropsComparer != null)
-                {
-                    if (entry.PropsComparer(entry.LastProps, props))
-                    {
-                        return;
-                    }
-                }
-                else if (Equals(entry.LastProps, props))
-                {
-                    return;
-                }
-            }
-
-            ApplyProps(entry.ViewModel, props);
-            entry.LastProps = props;
+            composition.ApplyProps(componentId, props);
         }
 
         // 组件事件订阅，统一输出 ComponentEvent。
@@ -502,80 +343,31 @@ namespace MVI.Composed
         // 事件统一入口，默认走路由表。
         protected virtual void OnComponentEvent(ComponentEvent componentEvent)
         {
-            DispatchEventRoutes(componentEvent);
+            composition.DispatchEventRoutes(componentEvent);
         }
 
         // 手动触发组件事件（必要时可直接调用）。
         protected void EmitComponentEvent(string componentId, string eventName, object payload)
         {
-            var componentEvent = new ComponentEvent(componentId, eventName, payload);
-            ComponentEventRaised?.Invoke(componentEvent);
-            OnComponentEvent(componentEvent);
+            composition.EmitComponentEvent(componentId, eventName, payload);
         }
 
         // 添加事件路由。
         protected void AddEventRoute(string componentId, string eventName, Type payloadType, Action<object> handler)
         {
-            if (string.IsNullOrWhiteSpace(componentId) || string.IsNullOrWhiteSpace(eventName) || handler == null)
-            {
-                return;
-            }
-
-            var key = new EventRouteKey(componentId, eventName);
-            if (!eventRoutes.TryGetValue(key, out var routes))
-            {
-                routes = new List<EventRoute>();
-                eventRoutes[key] = routes;
-            }
-
-            routes.Add(new EventRoute(componentId, eventName, payloadType, handler));
-        }
-
-        // 分发事件到路由表。
-        private void DispatchEventRoutes(ComponentEvent componentEvent)
-        {
-            if (componentEvent == null)
-            {
-                return;
-            }
-
-            var key = new EventRouteKey(componentEvent.ComponentId, componentEvent.EventName);
-            if (!eventRoutes.TryGetValue(key, out var routes))
-            {
-                return;
-            }
-
-            for (var i = 0; i < routes.Count; i++)
-            {
-                var route = routes[i];
-                if (route.PayloadType != null
-                    && componentEvent.Payload != null
-                    && !route.PayloadType.IsInstanceOfType(componentEvent.Payload))
-                {
-                    continue;
-                }
-
-                route.Handler(componentEvent.Payload);
-            }
+            composition.AddEventRoute(componentId, eventName, payloadType, handler);
         }
 
         // 统一订阅/解绑管理。
         protected void TrackSubscription(Action subscribe, Action unsubscribe)
         {
-            subscribe?.Invoke();
-            if (unsubscribe != null)
-            {
-                cleanupActions.Add(unsubscribe);
-            }
+            composition.TrackSubscription(subscribe, unsubscribe);
         }
 
         // 统一销毁 ViewModel。
         protected void TrackDisposable(IDisposable disposable)
         {
-            if (disposable != null)
-            {
-                cleanupActions.Add(disposable.Dispose);
-            }
+            composition.TrackDisposable(disposable);
         }
 
         // 统一销毁子视图。
@@ -586,13 +378,7 @@ namespace MVI.Composed
                 return;
             }
 
-            cleanupActions.Add(() =>
-            {
-                if (view != null)
-                {
-                    Destroy(view.gameObject);
-                }
-            });
+            composition.TrackCleanup(() => ViewHost.Destroy(view));
         }
 
         protected override void OnDestroy()
@@ -603,22 +389,37 @@ namespace MVI.Composed
             }
 
             isDestroyed = true;
-            for (var i = cleanupActions.Count - 1; i >= 0; i--)
-            {
-                try
-                {
-                    cleanupActions[i]?.Invoke();
-                }
-                catch (Exception)
-                {
-                    // Ignore cleanup errors to avoid masking Unity destroy.
-                }
-            }
-
-            cleanupActions.Clear();
-            registry.Clear();
-            eventRoutes.Clear();
+            composition.Dispose();
             base.OnDestroy();
+        }
+
+        private static Func<object, object, bool> WrapPropsComparer<TProps>(Func<TProps, TProps, bool> comparer)
+        {
+            return (previous, next) =>
+            {
+                if (ReferenceEquals(previous, next))
+                {
+                    return true;
+                }
+
+                if (previous == null || next == null)
+                {
+                    return false;
+                }
+
+                if (previous is TProps prevProps && next is TProps nextProps)
+                {
+                    return comparer(prevProps, nextProps);
+                }
+
+                return Equals(previous, next);
+            };
+        }
+
+        private void OnRuntimeComponentEventRaised(ComponentEvent componentEvent)
+        {
+            ComponentEventRaised?.Invoke(componentEvent);
+            OnComponentEvent(componentEvent);
         }
     }
 }

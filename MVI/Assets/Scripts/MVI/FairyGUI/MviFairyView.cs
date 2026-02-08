@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using FairyGUI;
 using Loxodon.Framework.Binding;
 using MVI.Components;
+using MVI.UIAdapters.FairyGUI;
 using UnityEngine;
 
 namespace MVI.FairyGUI
@@ -41,6 +42,8 @@ namespace MVI.FairyGUI
         private IState _pendingState;
         // 资源包加载器（用于对接 AssetBundle / YooAsset）。
         private IFairyPackageLoader _packageLoader;
+        // FairyGUI 适配器。
+        private FairyViewHost _viewHost;
 
         // 资源路径（Resources 下的路径），可由子类覆写。
         protected virtual string[] PackagePaths => packagePaths;
@@ -56,6 +59,12 @@ namespace MVI.FairyGUI
         protected virtual bool AutoCreateView => autoCreateView;
         // 自定义包加载器（默认使用 Resources 模式）。
         protected virtual IFairyPackageLoader PackageLoader => _packageLoader ??= new ResourcesPackageLoader();
+        protected FairyViewHost ViewHost => _viewHost ??= CreateViewHost();
+
+        protected virtual FairyViewHost CreateViewHost()
+        {
+            return new FairyViewHost(PackageLoader);
+        }
 
         protected virtual void Awake()
         {
@@ -130,6 +139,13 @@ namespace MVI.FairyGUI
         {
         }
 
+        // 设置自定义包加载器（例如接入 YooAsset 时注入）。
+        protected void SetPackageLoader(IFairyPackageLoader loader)
+        {
+            _packageLoader = loader;
+            _viewHost = null;
+        }
+
         // 异步加载 FairyGUI 资源包（默认走 Resources）。
         protected virtual ValueTask LoadPackagesAsync(CancellationToken cancellationToken = default)
         {
@@ -139,7 +155,7 @@ namespace MVI.FairyGUI
                 return default;
             }
 
-            return PackageLoader.LoadAsync(paths, cancellationToken);
+            return ViewHost.LoadPackagesAsync(paths, cancellationToken);
         }
 
         private IEnumerator LoadAndCreateView()
@@ -200,11 +216,11 @@ namespace MVI.FairyGUI
                 return null;
             }
 
-            // GRoot 模式：由代码创建 UI 并加入到舞台。
-            _root = UIPackage.CreateObject(PackageName, ComponentName).asCom;
+            // GRoot 模式：由 ViewHost 创建并按配置挂载到舞台。
+            _root = ViewHost.Load(typeof(GComponent), $"{PackageName}/{ComponentName}") as GComponent;
             if (_root != null && AddToGRoot)
             {
-                GRoot.inst.AddChild(_root);
+                ViewHost.Attach(_root, null);
             }
 
             return _root;
@@ -244,8 +260,7 @@ namespace MVI.FairyGUI
             // 非 UIPanel 模式下，主动移除并销毁根组件。
             if (Panel == null && _root != null)
             {
-                _root.RemoveFromParent();
-                _root.Dispose();
+                ViewHost.Destroy(_root);
                 _root = null;
             }
 

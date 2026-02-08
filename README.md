@@ -78,6 +78,12 @@ ComposedWindowBase : Window
 2. 组合式基类：`MVI/Assets/Scripts/MVI/Loxodon/Composed`
 3. 示例组件：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/Components`
 
+**新扩展架构（UI 适配层）**
+1. 组合核心：`MVI/Assets/Scripts/MVI/Core/Composition`
+2. UGUI 适配器：`MVI/Assets/Scripts/MVI/Loxodon/UIAdapters/UguiViewHost.cs`
+3. FairyGUI 适配器：`MVI/Assets/Scripts/MVI/FairyGUI/UIAdapters/FairyViewHost.cs`
+4. 组合页面基类（UGUI/FairyGUI）已统一复用同一套组合运行时（组件注册、Props diff、事件路由、清理）。
+
 ## Demo使用方法
 **入口场景**
 1. 打开 `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Launcher.unity`
