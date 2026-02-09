@@ -661,7 +661,7 @@ namespace MVI
                 {
                     if (halfOpenProbe || state.ConsecutiveFailures > 0 || state.OpenUntilUtc != DateTime.MinValue)
                     {
-                        closedByProbe = halfOpenProbe && state.OpenUntilUtc == DateTime.MinValue;
+                        closedByProbe = halfOpenProbe;
                         state.ConsecutiveFailures = 0;
                         state.OpenUntilUtc = DateTime.MinValue;
                         state.HalfOpenProbeInFlight = false;

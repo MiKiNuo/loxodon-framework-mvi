@@ -1,8 +1,8 @@
-# Loxodon Framework MVI (UPM)
+# Loxodon Framework MVI（UPM 包）
 
-## Install via Git URL
+## 通过 Git URL 安装
 
-Add this dependency in Unity `Packages/manifest.json`:
+在 Unity 项目的 `Packages/manifest.json` 中添加依赖：
 
 ```json
 {
@@ -12,17 +12,23 @@ Add this dependency in Unity `Packages/manifest.json`:
 }
 ```
 
-## What is included
+## 包内包含内容
 
-- Core MVI runtime: `Core/`
-- Loxodon integration and UGUI adapters: `Loxodon/`
-- FairyGUI integration and adapters: `FairyGUI/`
-- Editor tooling (DevTools window): `Editor/`
+- MVI 核心运行时：`Core/`
+- Loxodon 集成与 UGUI 适配：`Loxodon/`
+- FairyGUI 集成与适配：`FairyGUI/`
+- 编辑器工具（DevTools 窗口）：`Editor/`
 
-## Notes
+## 包内不包含内容
 
-- This package assumes your project already includes required third-party dependencies, for example:
+- 本 UPM 包不包含 Demo 与业务示例。
+- 如需查看示例场景与完整接入示例，请克隆仓库后查看：
+  - `MVI/Assets/Samples/`
+
+## 说明
+
+- 本包默认你已在项目中安装相关依赖，例如：
   - `R3.Unity`
   - `Loxodon.Framework`
-  - `FairyGUI` (only required when using FairyGUI integration)
-- For setup and integration examples, see repository root `README.md`.
+  - `FairyGUI`（仅在使用 FairyGUI 集成时需要）
+- 更完整的架构与示例说明，请查看仓库根目录 `README.md`。
