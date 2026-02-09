@@ -159,21 +159,7 @@ ComposedDashboardWindowBinder.BindAll();
 5. 内置中间件示例在 `LoginViewModel.ConfigureStoreMiddlewares`：`LoggingStoreMiddleware` + `DebounceIntentMiddleware` + `TimeoutIntentMiddleware`
 6. 指标中间件示例：`MetricsStoreMiddleware` + `StoreMiddlewareMetricsCollector`
 
-## 可优化项（已落地 1-6）
-1. 持久化容错：`SerializedStoreStatePersistenceOptions` 支持加载失败回调与损坏快照自动清理
-2. 序列化性能：`JsonStoreStateSerializer` 增加状态类型解析缓存，减少重复反射扫描
-3. 防抖/去重可观测性：`DebounceIntentMiddleware` 与 `DeduplicateIntentMiddleware` 增加丢弃回调
-4. 缓存容量控制：`CacheResultMiddleware` 增加 `maxEntryCount` 与 LRU 淘汰
-5. 错误策略精细化：`TemplateMviErrorStrategyBuilder` 支持按 `MviErrorPhase` 匹配规则与分阶段退避
-6. DevTools 导出：`MviDevTools.ExportTimeline` + Editor 窗口 `Copy Timeline/Save Timeline`
-
-## 可优化项（已落地 7-10）
-7. 文件持久化后端：`FileStoreStateStorage`（原子替换写入、key 安全文件名、跨平台路径）
-8. 中间件指标采集：`MetricsStoreMiddleware` + `StoreMiddlewareMetricsCollector`
-9. 错误策略抖动退避：`UseExponentialBackoffForExceptionWithJitter*`（降低重试雪崩）
-10. DevTools JSON 导出：`MviDevTools.ExportTimelineJson` + Editor 窗口 `Copy JSON/Save JSON`
-
-## 扩展能力（摘要）
+## 扩展能力
 1. 泛型 Store / MviResult：`Store<TState, TIntent, TResult>` / `MviResult<T>`
 2. Effects 与错误通道：`Store.Effects` / `Store.Errors`
 3. Intent 并发与取消：`ProcessingMode` / `EmitIntent(intent, cancellationToken)`
