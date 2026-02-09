@@ -7,7 +7,7 @@
 ```json
 {
   "dependencies": {
-    "com.mikinuo.loxodon-framework-mvi": "https://github.com/<your-org>/<your-repo>.git?path=/MVI/Assets/Scripts/MVI"
+    "com.mikinuo.loxodon-framework-mvi": "https://github.com/MiKiNuo/loxodon-framework-mvi.git?path=/MVI/Assets/Scripts/MVI"
   }
 }
 ```
