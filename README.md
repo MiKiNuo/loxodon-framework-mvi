@@ -144,12 +144,34 @@ ComposedDashboardWindowBinder.BindAll();
 3. `enableBusinessErrorStrategy` + `businessErrorRetryCount` + `businessErrorRetryDelayMs`：开启全局错误策略与重试参数
 4. `enableLoginAuditMiddleware`：是否给 `LoginStore` 注入登录审计中间件
 5. `autoDumpLoginStoreTimeline`：登录完成后自动打印时间线快照
+6. `enableBuiltinLoginMiddlewares`：是否启用内置中间件链（日志/防抖/超时）
+7. `enableLoginLoggingMiddleware`：是否启用 `LoggingStoreMiddleware`
+8. `loginDebounceMs`：登录意图防抖窗口（毫秒）
+9. `loginTimeoutMs`：登录意图超时阈值（毫秒）
+10. `enableLoginMetricsMiddleware`：是否启用登录链路指标中间件
+11. `autoDumpLoginMiddlewareMetrics`：登录完成后自动打印中间件指标快照
 
 **业务接入要点**
 1. 在入口统一安装：`MviBusinessIntegrationInstaller.Install(...)`
 2. 在具体业务 Store 创建处调用 `store.UseMiddleware(new LoginIntentAuditMiddleware())`
 3. 通过 `BusinessMviIntegrationRuntime.DumpTimeline(store, tag)` 输出时间线
 4. 全局错误策略走 `IMviErrorStrategy`，可按阶段返回 `Retry/Ignore/Emit/Fallback`
+5. 内置中间件示例在 `LoginViewModel.ConfigureStoreMiddlewares`：`LoggingStoreMiddleware` + `DebounceIntentMiddleware` + `TimeoutIntentMiddleware`
+6. 指标中间件示例：`MetricsStoreMiddleware` + `StoreMiddlewareMetricsCollector`
+
+## 可优化项（已落地 1-6）
+1. 持久化容错：`SerializedStoreStatePersistenceOptions` 支持加载失败回调与损坏快照自动清理
+2. 序列化性能：`JsonStoreStateSerializer` 增加状态类型解析缓存，减少重复反射扫描
+3. 防抖/去重可观测性：`DebounceIntentMiddleware` 与 `DeduplicateIntentMiddleware` 增加丢弃回调
+4. 缓存容量控制：`CacheResultMiddleware` 增加 `maxEntryCount` 与 LRU 淘汰
+5. 错误策略精细化：`TemplateMviErrorStrategyBuilder` 支持按 `MviErrorPhase` 匹配规则与分阶段退避
+6. DevTools 导出：`MviDevTools.ExportTimeline` + Editor 窗口 `Copy Timeline/Save Timeline`
+
+## 可优化项（已落地 7-10）
+7. 文件持久化后端：`FileStoreStateStorage`（原子替换写入、key 安全文件名、跨平台路径）
+8. 中间件指标采集：`MetricsStoreMiddleware` + `StoreMiddlewareMetricsCollector`
+9. 错误策略抖动退避：`UseExponentialBackoffForExceptionWithJitter*`（降低重试雪崩）
+10. DevTools JSON 导出：`MviDevTools.ExportTimelineJson` + Editor 窗口 `Copy JSON/Save JSON`
 
 ## 扩展能力（摘要）
 1. 泛型 Store / MviResult：`Store<TState, TIntent, TResult>` / `MviResult<T>`

@@ -61,6 +61,12 @@ namespace Loxodon.Framework.Examples
         [SerializeField] private int businessErrorRetryDelayMs = 120;
         [SerializeField] private bool enableLoginAuditMiddleware = true;
         [SerializeField] private bool autoDumpLoginStoreTimeline = false;
+        [SerializeField] private bool enableBuiltinLoginMiddlewares = true;
+        [SerializeField] private bool enableLoginLoggingMiddleware = false;
+        [SerializeField] private int loginDebounceMs = 250;
+        [SerializeField] private int loginTimeoutMs = 5000;
+        [SerializeField] private bool enableLoginMetricsMiddleware = true;
+        [SerializeField] private bool autoDumpLoginMiddlewareMetrics = false;
 
         // 运行时可注入自定义 Fairy 包加载器（例如 YooAsset）。
         public static IFairyPackageLoader RuntimeFairyPackageLoader { get; set; }
@@ -120,7 +126,13 @@ namespace Loxodon.Framework.Examples
                 maxRetryCount: businessErrorRetryCount,
                 retryDelayMs: businessErrorRetryDelayMs,
                 enableLoginAuditMiddleware: enableLoginAuditMiddleware,
-                autoDumpLoginStoreTimeline: autoDumpLoginStoreTimeline));
+                autoDumpLoginStoreTimeline: autoDumpLoginStoreTimeline,
+                enableBuiltinLoginMiddlewares: enableBuiltinLoginMiddlewares,
+                enableLoginLoggingMiddleware: enableLoginLoggingMiddleware,
+                loginDebounceMs: loginDebounceMs,
+                loginTimeoutMs: loginTimeoutMs,
+                enableLoginMetricsMiddleware: enableLoginMetricsMiddleware,
+                autoDumpLoginMiddlewareMetrics: autoDumpLoginMiddlewareMetrics));
         }
 
         IEnumerator Start()

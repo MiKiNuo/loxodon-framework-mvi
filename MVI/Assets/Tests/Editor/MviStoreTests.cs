@@ -1,13 +1,16 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using MVI;
 using NUnit.Framework;
 using R3;
+using UnityEngine;
 using UnityEngine.TestTools;
 
 namespace MVI.Tests
@@ -291,6 +294,66 @@ namespace MVI.Tests
             public ValueTask<MviErrorDecision> DecideAsync(MviErrorContext context, CancellationToken cancellationToken = default)
             {
                 return new ValueTask<MviErrorDecision>(MviErrorDecision.Ignore());
+            }
+        }
+
+        [Serializable]
+        private sealed class SerializableState : IState
+        {
+            public int value;
+            public bool isUpdateNewState = true;
+
+            public bool IsUpdateNewState
+            {
+                get => isUpdateNewState;
+                set => isUpdateNewState = value;
+            }
+        }
+
+        private sealed class CountingIntent : ITestIntent
+        {
+            public static int InvocationCount;
+            private readonly int _value;
+
+            public CountingIntent(int value)
+            {
+                _value = value;
+            }
+
+            public ValueTask<IMviResult> HandleIntentAsync(CancellationToken ct = default)
+            {
+                InvocationCount++;
+                return new ValueTask<IMviResult>(new TestResult(_value));
+            }
+
+            public override string ToString()
+            {
+                return $"CountingIntent:{_value}";
+            }
+        }
+
+        private sealed class DelayedCountingIntent : ITestIntent
+        {
+            public static int InvocationCount;
+            private readonly int _value;
+            private readonly int _delayMs;
+
+            public DelayedCountingIntent(int value, int delayMs)
+            {
+                _value = value;
+                _delayMs = delayMs;
+            }
+
+            public async ValueTask<IMviResult> HandleIntentAsync(CancellationToken ct = default)
+            {
+                InvocationCount++;
+                await Task.Delay(_delayMs, ct);
+                return new TestResult(_value);
+            }
+
+            public override string ToString()
+            {
+                return $"DelayedCountingIntent:{_value}:{_delayMs}";
             }
         }
 
@@ -677,6 +740,387 @@ namespace MVI.Tests
             Assert.IsNotEmpty(kit.States);
             Assert.AreEqual(21, kit.LastStateAs<TestState>()?.Value ?? -1);
             store.Dispose();
+        }
+
+        [Test]
+        public void SerializedPersistence_JsonMigrationAndEncryption_ShouldRoundTrip()
+        {
+            var storage = new InMemoryStoreStateStorage();
+            var serializer = new JsonStoreStateSerializer(schemaVersion: 1);
+            var migrator = new VersionedStoreStateMigrator()
+                .AddStep("json", 1, snapshot =>
+                {
+                    var json = Encoding.UTF8.GetString(snapshot.Payload);
+                    var state = JsonUtility.FromJson<SerializableState>(json) ?? new SerializableState();
+                    state.value += 10;
+                    return snapshot.With(
+                        schemaVersion: 2,
+                        payload: Encoding.UTF8.GetBytes(JsonUtility.ToJson(state)));
+                });
+
+            var persistence = new SerializedStoreStatePersistence(
+                storage: storage,
+                serializers: new[] { serializer },
+                defaultSerializerId: serializer.SerializerId,
+                encryptor: new XorStoreStateEncryptor("ut-secret"),
+                migrator: migrator);
+
+            persistence.Save("mvi.persistence.json", new SerializableState { value = 5, isUpdateNewState = true });
+
+            Assert.IsTrue(persistence.TryLoad("mvi.persistence.json", out var loaded));
+            Assert.IsInstanceOf<SerializableState>(loaded);
+            Assert.AreEqual(15, ((SerializableState)loaded).value);
+        }
+
+        [Test]
+        public void SerializedPersistence_BinaryFactory_ShouldRoundTrip()
+        {
+            var storage = new InMemoryStoreStateStorage();
+            var persistence = StoreStatePersistenceFactory.CreateBinaryPersistence(
+                storage: storage,
+                schemaVersion: 3,
+                compress: true,
+                encryptor: new PassthroughStoreStateEncryptor());
+
+            persistence.Save("mvi.persistence.binary", new SerializableState { value = 42, isUpdateNewState = true });
+
+            Assert.IsTrue(persistence.TryLoad("mvi.persistence.binary", out var loaded));
+            Assert.IsInstanceOf<SerializableState>(loaded);
+            Assert.AreEqual(42, ((SerializableState)loaded).value);
+        }
+
+        [Test]
+        public void SerializedPersistence_LoadCorruptedData_ShouldClearAndReport()
+        {
+            var storage = new InMemoryStoreStateStorage();
+            storage.Write("mvi.persistence.corrupted", Encoding.UTF8.GetBytes("{invalid-json"));
+            var failedReason = string.Empty;
+
+            var persistence = new SerializedStoreStatePersistence(
+                storage: storage,
+                serializers: new IStoreStateSerializer[] { new JsonStoreStateSerializer() },
+                defaultSerializerId: "json",
+                options: new SerializedStoreStatePersistenceOptions
+                {
+                    ClearCorruptedDataOnLoadFailure = true,
+                    OnLoadFailed = (_, reason) => failedReason = reason
+                });
+
+            Assert.IsFalse(persistence.TryLoad("mvi.persistence.corrupted", out _));
+            Assert.IsFalse(storage.TryRead("mvi.persistence.corrupted", out _));
+            Assert.IsFalse(string.IsNullOrWhiteSpace(failedReason));
+        }
+
+        [Test]
+        public void FileStoreStateStorage_ShouldRoundTripAndClear()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "mvi-state-storage-tests", Guid.NewGuid().ToString("N"));
+            var storage = new FileStoreStateStorage(rootDirectory: root, fileExtension: ".bin");
+            var payload = Encoding.UTF8.GetBytes("hello-mvi");
+
+            storage.Write("test/key:1", payload);
+            Assert.IsTrue(storage.TryRead("test/key:1", out var loaded));
+            CollectionAssert.AreEqual(payload, loaded);
+
+            storage.Clear("test/key:1");
+            Assert.IsFalse(storage.TryRead("test/key:1", out _));
+
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator BuiltinMiddleware_Debounce_ShouldDropRapidDuplicateIntents()
+        {
+            CountingIntent.InvocationCount = 0;
+            var droppedCount = 0;
+            var store = new TestStoreNoEffect();
+            store.UseMiddleware(new DebounceIntentMiddleware(
+                TimeSpan.FromMilliseconds(300),
+                _ => "same-key",
+                onDropped: (_, _) => droppedCount++));
+
+            store.EmitIntent(new CountingIntent(1));
+            store.EmitIntent(new CountingIntent(2));
+            yield return null;
+
+            Assert.AreEqual(1, CountingIntent.InvocationCount);
+            Assert.AreEqual(1, droppedCount);
+            store.Dispose();
+        }
+
+        [UnityTest]
+        public IEnumerator BuiltinMiddleware_Deduplicate_ShouldSkipInFlightIntent()
+        {
+            DelayedCountingIntent.InvocationCount = 0;
+            var skippedCount = 0;
+            var store = new TestStoreNoEffect();
+            store.UseMiddleware(new DeduplicateIntentMiddleware(
+                _ => "same-key",
+                onSkipped: (_, _) => skippedCount++));
+
+            store.EmitIntent(new DelayedCountingIntent(1, 220));
+            store.EmitIntent(new DelayedCountingIntent(2, 10));
+
+            var timeout = DateTime.UtcNow.AddSeconds(3);
+            while (DateTime.UtcNow < timeout && store.CurrentState.Value != 1)
+            {
+                yield return null;
+            }
+
+            Assert.AreEqual(1, DelayedCountingIntent.InvocationCount);
+            Assert.AreEqual(1, skippedCount);
+            Assert.AreEqual(1, store.CurrentState.Value);
+            store.Dispose();
+        }
+
+        [UnityTest]
+        public IEnumerator BuiltinMiddleware_Cache_ShouldReuseResult()
+        {
+            CountingIntent.InvocationCount = 0;
+            var store = new TestStoreNoEffect();
+            store.UseMiddleware(new CacheResultMiddleware(TimeSpan.FromSeconds(5), intent => intent.ToString()));
+
+            store.EmitIntent(new CountingIntent(9));
+            yield return null;
+            store.EmitIntent(new CountingIntent(9));
+            yield return null;
+
+            Assert.AreEqual(1, CountingIntent.InvocationCount);
+            Assert.AreEqual(9, store.CurrentState.Value);
+            store.Dispose();
+        }
+
+        [UnityTest]
+        public IEnumerator BuiltinMiddleware_CacheWithCapacity_ShouldEvictOldestEntry()
+        {
+            CountingIntent.InvocationCount = 0;
+            var store = new TestStoreNoEffect();
+            store.UseMiddleware(new CacheResultMiddleware(
+                ttl: TimeSpan.FromSeconds(10),
+                keyResolver: intent => intent.ToString(),
+                maxEntryCount: 1));
+
+            store.EmitIntent(new CountingIntent(1));
+            yield return null;
+            store.EmitIntent(new CountingIntent(2));
+            yield return null;
+            store.EmitIntent(new CountingIntent(1));
+            yield return null;
+
+            Assert.AreEqual(3, CountingIntent.InvocationCount);
+            store.Dispose();
+        }
+
+        [UnityTest]
+        public IEnumerator BuiltinMiddleware_Timeout_ShouldEmitError()
+        {
+            DelayedCountingIntent.InvocationCount = 0;
+            var store = new TestStoreNoEffect();
+            var errors = new List<MviErrorEffect>();
+            store.Errors.Subscribe(errors.Add);
+            store.UseMiddleware(new TimeoutIntentMiddleware(TimeSpan.FromMilliseconds(40)));
+
+            store.EmitIntent(new DelayedCountingIntent(3, 260));
+
+            var timeout = DateTime.UtcNow.AddSeconds(3);
+            while (DateTime.UtcNow < timeout && errors.Count == 0)
+            {
+                yield return null;
+            }
+
+            Assert.IsNotEmpty(errors);
+            Assert.IsTrue(errors.Any(error => error.Exception is TimeoutException));
+            store.Dispose();
+        }
+
+        [UnityTest]
+        public IEnumerator BuiltinMiddleware_Metrics_ShouldTrackSuccessAndFailure()
+        {
+            var store = new TestStoreNoEffect();
+            var collector = new StoreMiddlewareMetricsCollector();
+            store.UseMiddleware(new MetricsStoreMiddleware(collector));
+
+            store.EmitIntent(new SetValueIntent(10));
+            yield return null;
+            store.EmitIntent(new ThrowIntent());
+            yield return null;
+
+            var snapshot = collector.CaptureSnapshot();
+            Assert.AreEqual(2, snapshot.TotalCount);
+            Assert.AreEqual(1, snapshot.SuccessCount);
+            Assert.AreEqual(1, snapshot.FailureCount);
+            Assert.GreaterOrEqual(snapshot.TotalElapsedMs, 0);
+            store.Dispose();
+        }
+
+        [Test]
+        public void TemplateErrorStrategy_ShouldMatchBusinessCode()
+        {
+            var strategy = new TemplateMviErrorStrategyBuilder()
+                .ForBusinessCode(401, _ => MviErrorDecision.Ignore())
+                .Build();
+
+            var context = new MviErrorContext(
+                store: null,
+                exception: new BusinessCodeException(401, "unauthorized"),
+                intent: null,
+                attempt: 0,
+                phase: MviErrorPhase.IntentProcessing);
+
+            var decision = strategy.DecideAsync(context).Result;
+            Assert.IsFalse(decision.EmitError);
+            Assert.AreEqual(0, decision.RetryCount);
+        }
+
+        [Test]
+        public void TemplateErrorStrategy_ExponentialBackoff_ShouldApplyDelayCurve()
+        {
+            var strategy = new TemplateMviErrorStrategyBuilder()
+                .UseExponentialBackoffForException<InvalidOperationException>(
+                    maxRetryCount: 3,
+                    baseDelayMs: 100,
+                    maxDelayMs: 500,
+                    emitErrorOnRetry: false)
+                .Build();
+
+            var d0 = strategy.DecideAsync(new MviErrorContext(null, new InvalidOperationException("x"), null, 0, MviErrorPhase.IntentProcessing)).Result;
+            var d2 = strategy.DecideAsync(new MviErrorContext(null, new InvalidOperationException("x"), null, 2, MviErrorPhase.IntentProcessing)).Result;
+            var d3 = strategy.DecideAsync(new MviErrorContext(null, new InvalidOperationException("x"), null, 3, MviErrorPhase.IntentProcessing)).Result;
+
+            Assert.AreEqual(3, d0.RetryCount);
+            Assert.AreEqual(100, (int)d0.RetryDelay.TotalMilliseconds);
+            Assert.AreEqual(400, (int)d2.RetryDelay.TotalMilliseconds);
+            Assert.IsTrue(d3.EmitError);
+            Assert.AreEqual(0, d3.RetryCount);
+        }
+
+        [Test]
+        public void TemplateErrorStrategy_ForExceptionInPhase_ShouldRespectPhase()
+        {
+            var strategy = new TemplateMviErrorStrategyBuilder()
+                .ForExceptionInPhase<InvalidOperationException>(MviErrorPhase.Reducing, _ => MviErrorDecision.Ignore())
+                .Build();
+
+            var intentPhase = strategy.DecideAsync(new MviErrorContext(
+                null,
+                new InvalidOperationException("x"),
+                null,
+                0,
+                MviErrorPhase.IntentProcessing)).Result;
+
+            var reducePhase = strategy.DecideAsync(new MviErrorContext(
+                null,
+                new InvalidOperationException("x"),
+                null,
+                0,
+                MviErrorPhase.Reducing)).Result;
+
+            Assert.IsTrue(intentPhase.EmitError);
+            Assert.IsFalse(reducePhase.EmitError);
+        }
+
+        [Test]
+        public void TemplateErrorStrategy_ExponentialBackoffWithJitter_ShouldStayInExpectedRange()
+        {
+            var strategy = new TemplateMviErrorStrategyBuilder()
+                .UseExponentialBackoffForExceptionWithJitter<InvalidOperationException>(
+                    maxRetryCount: 2,
+                    baseDelayMs: 100,
+                    maxDelayMs: 500,
+                    jitterRate: 0.2d,
+                    emitErrorOnRetry: false)
+                .Build();
+
+            var decision = strategy.DecideAsync(
+                new MviErrorContext(null, new InvalidOperationException("x"), null, 0, MviErrorPhase.IntentProcessing)).Result;
+
+            Assert.AreEqual(2, decision.RetryCount);
+            Assert.IsFalse(decision.EmitError);
+            Assert.GreaterOrEqual((int)decision.RetryDelay.TotalMilliseconds, 80);
+            Assert.LessOrEqual((int)decision.RetryDelay.TotalMilliseconds, 120);
+        }
+
+        [UnityTest]
+        public IEnumerator DevTools_TrackedStoresSnapshot_ShouldContainActiveStore()
+        {
+            var previousEnabled = MviDevTools.Enabled;
+            MviDevTools.Enabled = true;
+            try
+            {
+                var store = new TestStoreNoEffect();
+                store.EmitIntent(new SetValueIntent(5));
+                yield return null;
+
+                var tracked = MviDevTools.GetTrackedStoresSnapshot();
+                Assert.IsTrue(tracked.Any(item => ReferenceEquals(item, store)));
+
+                store.Dispose();
+                yield return null;
+
+                tracked = MviDevTools.GetTrackedStoresSnapshot();
+                Assert.IsFalse(tracked.Any(item => ReferenceEquals(item, store)));
+            }
+            finally
+            {
+                MviDevTools.Enabled = previousEnabled;
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator DevTools_ExportTimeline_ShouldReturnFilteredText()
+        {
+            var previousEnabled = MviDevTools.Enabled;
+            MviDevTools.Enabled = true;
+            try
+            {
+                var store = new TestStoreNoEffect();
+                store.EmitIntent(new SetValueIntent(11));
+                yield return null;
+
+                var content = MviDevTools.ExportTimeline(
+                    store,
+                    includePayloadDetails: false,
+                    filter: entry => entry.Kind == MviTimelineEventKind.Intent || entry.Kind == MviTimelineEventKind.Result);
+
+                Assert.IsFalse(string.IsNullOrWhiteSpace(content));
+                StringAssert.Contains("Intent", content);
+                StringAssert.Contains("Result", content);
+                store.Dispose();
+            }
+            finally
+            {
+                MviDevTools.Enabled = previousEnabled;
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator DevTools_ExportTimelineJson_ShouldContainEventFields()
+        {
+            var previousEnabled = MviDevTools.Enabled;
+            MviDevTools.Enabled = true;
+            try
+            {
+                var store = new TestStoreNoEffect();
+                store.EmitIntent(new SetValueIntent(15));
+                yield return null;
+
+                var content = MviDevTools.ExportTimelineJson(
+                    store,
+                    includePayloadDetails: false,
+                    filter: entry => entry.Kind == MviTimelineEventKind.Intent);
+
+                Assert.IsFalse(string.IsNullOrWhiteSpace(content));
+                StringAssert.Contains("\"events\"", content);
+                StringAssert.Contains("\"kind\": \"Intent\"", content);
+                store.Dispose();
+            }
+            finally
+            {
+                MviDevTools.Enabled = previousEnabled;
+            }
         }
 
         private static bool IsDisposed(Store store)

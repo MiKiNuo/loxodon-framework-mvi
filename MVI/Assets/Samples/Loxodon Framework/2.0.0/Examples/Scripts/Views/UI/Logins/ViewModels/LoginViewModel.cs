@@ -22,6 +22,7 @@
  * SOFTWARE.
  */
 
+using System;
 using Loxodon.Framework.Commands;
 using Loxodon.Framework.Contexts;
 using Loxodon.Framework.Examples.Scripts.Views.UI.Logins.Const;
@@ -35,6 +36,7 @@ namespace Loxodon.Framework.Examples
     {
         // 业务 Store 引用（用于挂载中间件与可选的 DevTools 时间线输出）。
         private readonly LoginStore loginStore;
+        private readonly StoreMiddlewareMetricsCollector loginMiddlewareMetrics;
         private string username;
         private string password;
 
@@ -66,10 +68,7 @@ namespace Loxodon.Framework.Examples
 
             // 业务侧接入示例：在 ViewModel 构造阶段给 Store 挂中间件。
             this.loginStore = new LoginStore();
-            if (BusinessMviIntegrationRuntime.EnableLoginAuditMiddleware)
-            {
-                this.loginStore.UseMiddleware(new LoginIntentAuditMiddleware());
-            }
+            this.loginMiddlewareMetrics = ConfigureStoreMiddlewares(this.loginStore);
 
             BindStore(this.loginStore);
             
@@ -134,6 +133,13 @@ namespace Loxodon.Framework.Examples
                         // DevTools 示例：登录完成后打印当前 Store 的时间线快照。
                         BusinessMviIntegrationRuntime.DumpTimeline(this.loginStore, nameof(LoginStore));
                     }
+
+                    if (BusinessMviIntegrationRuntime.AutoDumpLoginMiddlewareMetrics && this.loginMiddlewareMetrics != null)
+                    {
+                        var metrics = this.loginMiddlewareMetrics.CaptureSnapshot();
+                        UnityEngine.Debug.Log(
+                            $"[MVI-Middleware] Login metrics total={metrics.TotalCount}, success={metrics.SuccessCount}, failure={metrics.FailureCount}, avgMs={metrics.AverageElapsedMs:F1}");
+                    }
                     this.interactionFinished.Raise();
                     break;
             }
@@ -154,6 +160,52 @@ namespace Loxodon.Framework.Examples
         {
             this.loginCommand.Enabled = false; /*by databinding, auto set button.interactable = false. */
             EmitIntent(new LoginIntent(this.Username, this.password));
+        }
+
+        private static StoreMiddlewareMetricsCollector ConfigureStoreMiddlewares(LoginStore store)
+        {
+            if (store == null)
+            {
+                return null;
+            }
+
+            // 示例 1：业务自定义中间件（审计日志 + 用户名脱敏）。
+            if (BusinessMviIntegrationRuntime.EnableLoginAuditMiddleware)
+            {
+                store.UseMiddleware(new LoginIntentAuditMiddleware());
+            }
+
+            // 示例 2：框架内置中间件组合（日志/防抖/超时）。
+            if (BusinessMviIntegrationRuntime.EnableBuiltinLoginMiddlewares)
+            {
+                if (BusinessMviIntegrationRuntime.EnableLoginLoggingMiddleware)
+                {
+                    store.UseMiddleware(new LoggingStoreMiddleware());
+                }
+
+                var debounceMs = Math.Max(0, BusinessMviIntegrationRuntime.LoginDebounceMs);
+                if (debounceMs > 0)
+                {
+                    // 防抖：短时间内重复点击登录，仅保留一次。
+                    store.UseMiddleware(new DebounceIntentMiddleware(
+                        window: TimeSpan.FromMilliseconds(debounceMs),
+                        keyResolver: _ => nameof(LoginIntent)));
+                }
+
+                var timeoutMs = Math.Max(100, BusinessMviIntegrationRuntime.LoginTimeoutMs);
+                // 超时：防止网络长时间阻塞导致登录交互无响应。
+                store.UseMiddleware(new TimeoutIntentMiddleware(TimeSpan.FromMilliseconds(timeoutMs)));
+            }
+
+            // 指标中间件：用于统计登录链路成功率和平均耗时。
+            if (!BusinessMviIntegrationRuntime.EnableLoginMetricsMiddleware)
+            {
+                return null;
+            }
+
+            var collector = new StoreMiddlewareMetricsCollector();
+            store.UseMiddleware(new MetricsStoreMiddleware(collector));
+            return collector;
         }
     }
 }

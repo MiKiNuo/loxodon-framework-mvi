@@ -20,7 +20,13 @@ namespace Loxodon.Framework.Examples
             int maxRetryCount,
             int retryDelayMs,
             bool enableLoginAuditMiddleware,
-            bool autoDumpLoginStoreTimeline)
+            bool autoDumpLoginStoreTimeline,
+            bool enableBuiltinLoginMiddlewares,
+            bool enableLoginLoggingMiddleware,
+            int loginDebounceMs,
+            int loginTimeoutMs,
+            bool enableLoginMetricsMiddleware,
+            bool autoDumpLoginMiddlewareMetrics)
         {
             EnableDiagnostics = enableDiagnostics;
             EnableDevTools = enableDevTools;
@@ -30,6 +36,12 @@ namespace Loxodon.Framework.Examples
             RetryDelayMs = retryDelayMs;
             EnableLoginAuditMiddleware = enableLoginAuditMiddleware;
             AutoDumpLoginStoreTimeline = autoDumpLoginStoreTimeline;
+            EnableBuiltinLoginMiddlewares = enableBuiltinLoginMiddlewares;
+            EnableLoginLoggingMiddleware = enableLoginLoggingMiddleware;
+            LoginDebounceMs = loginDebounceMs;
+            LoginTimeoutMs = loginTimeoutMs;
+            EnableLoginMetricsMiddleware = enableLoginMetricsMiddleware;
+            AutoDumpLoginMiddlewareMetrics = autoDumpLoginMiddlewareMetrics;
         }
 
         public bool EnableDiagnostics { get; }
@@ -47,6 +59,18 @@ namespace Loxodon.Framework.Examples
         public bool EnableLoginAuditMiddleware { get; }
 
         public bool AutoDumpLoginStoreTimeline { get; }
+
+        public bool EnableBuiltinLoginMiddlewares { get; }
+
+        public bool EnableLoginLoggingMiddleware { get; }
+
+        public int LoginDebounceMs { get; }
+
+        public int LoginTimeoutMs { get; }
+
+        public bool EnableLoginMetricsMiddleware { get; }
+
+        public bool AutoDumpLoginMiddlewareMetrics { get; }
     }
 
     /// <summary>
@@ -57,6 +81,20 @@ namespace Loxodon.Framework.Examples
         public static bool EnableLoginAuditMiddleware { get; internal set; }
 
         public static bool AutoDumpLoginStoreTimeline { get; internal set; }
+
+        // 登录链路内置中间件（日志/防抖/超时）开关。
+        public static bool EnableBuiltinLoginMiddlewares { get; internal set; }
+
+        public static bool EnableLoginLoggingMiddleware { get; internal set; }
+
+        public static int LoginDebounceMs { get; internal set; } = 250;
+
+        public static int LoginTimeoutMs { get; internal set; } = 5000;
+
+        // 登录链路指标中间件开关。
+        public static bool EnableLoginMetricsMiddleware { get; internal set; }
+
+        public static bool AutoDumpLoginMiddlewareMetrics { get; internal set; }
 
         public static void DumpTimeline(Store store, string tag)
         {
@@ -110,6 +148,14 @@ namespace Loxodon.Framework.Examples
             // 4) 业务中间件开关（这里演示登录意图审计）。
             BusinessMviIntegrationRuntime.EnableLoginAuditMiddleware = options.EnableLoginAuditMiddleware;
             BusinessMviIntegrationRuntime.AutoDumpLoginStoreTimeline = options.AutoDumpLoginStoreTimeline;
+
+            // 5) 内置中间件开关（用于演示通用库在业务链路中的接入方式）。
+            BusinessMviIntegrationRuntime.EnableBuiltinLoginMiddlewares = options.EnableBuiltinLoginMiddlewares;
+            BusinessMviIntegrationRuntime.EnableLoginLoggingMiddleware = options.EnableLoginLoggingMiddleware;
+            BusinessMviIntegrationRuntime.LoginDebounceMs = Mathf.Clamp(options.LoginDebounceMs, 0, 10_000);
+            BusinessMviIntegrationRuntime.LoginTimeoutMs = Mathf.Clamp(options.LoginTimeoutMs, 100, 60_000);
+            BusinessMviIntegrationRuntime.EnableLoginMetricsMiddleware = options.EnableLoginMetricsMiddleware;
+            BusinessMviIntegrationRuntime.AutoDumpLoginMiddlewareMetrics = options.AutoDumpLoginMiddlewareMetrics;
         }
     }
 
@@ -120,13 +166,29 @@ namespace Loxodon.Framework.Examples
     /// </summary>
     public sealed class BusinessMviErrorStrategy : IMviErrorStrategy
     {
-        private readonly int _maxRetryCount;
-        private readonly int _retryDelayMs;
+        private readonly TemplateMviErrorStrategy _template;
 
         public BusinessMviErrorStrategy(int maxRetryCount, int retryDelayMs)
         {
-            _maxRetryCount = Mathf.Clamp(maxRetryCount, 0, 5);
-            _retryDelayMs = Mathf.Clamp(retryDelayMs, 0, 5000);
+            var safeRetryCount = Mathf.Clamp(maxRetryCount, 0, 5);
+            var safeRetryDelayMs = Mathf.Clamp(retryDelayMs, 0, 5000);
+            _template = new TemplateMviErrorStrategyBuilder()
+                // 业务码示例：未授权直接发错误，不做重试。
+                .ForBusinessCode(401, _ => MviErrorDecision.Emit())
+                // 超时异常示例：按指数退避重试。
+                .UseExponentialBackoffForException<TimeoutException>(
+                    maxRetryCount: safeRetryCount,
+                    baseDelayMs: safeRetryDelayMs,
+                    maxDelayMs: Math.Max(safeRetryDelayMs * 4, safeRetryDelayMs),
+                    emitErrorOnRetry: false)
+                // 兜底：普通异常也允许重试（可按业务移除）。
+                .UseExponentialBackoffForException<Exception>(
+                    maxRetryCount: safeRetryCount,
+                    baseDelayMs: safeRetryDelayMs,
+                    maxDelayMs: Math.Max(safeRetryDelayMs * 4, safeRetryDelayMs),
+                    emitErrorOnRetry: false,
+                    exhaustedDecision: MviErrorDecision.Emit())
+                .Build();
         }
 
         public ValueTask<MviErrorDecision> DecideAsync(MviErrorContext context, CancellationToken cancellationToken = default)
@@ -142,17 +204,7 @@ namespace Loxodon.Framework.Examples
                 return new ValueTask<MviErrorDecision>(MviErrorDecision.Ignore());
             }
 
-            if (context.Phase == MviErrorPhase.IntentProcessing && context.Attempt < _maxRetryCount)
-            {
-                // 重试阶段先不发 Error，避免同一错误弹多次。
-                return new ValueTask<MviErrorDecision>(
-                    MviErrorDecision.Retry(
-                        retryCount: _maxRetryCount,
-                        retryDelay: TimeSpan.FromMilliseconds(_retryDelayMs),
-                        emitError: false));
-            }
-
-            return new ValueTask<MviErrorDecision>(MviErrorDecision.Emit());
+            return _template.DecideAsync(context, cancellationToken);
         }
     }
 }
