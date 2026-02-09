@@ -100,6 +100,16 @@ namespace MVI.Editor
                 MviDevTools.MaxEventsPerStore = Math.Max(1, maxEvents);
             }
 
+            GUILayout.Space(8);
+            var sampling = MviDevTools.SamplingOptions;
+            GUILayout.Label("Sample", GUILayout.Width(50));
+            var sampleRate = EditorGUILayout.Slider((float)sampling.SampleRate, 0f, 1f, GUILayout.Width(120));
+            if (Math.Abs(sampleRate - (float)sampling.SampleRate) > 0.0001f)
+            {
+                sampling.SampleRate = sampleRate;
+                MviDevTools.SamplingOptions = sampling;
+            }
+
             GUILayout.FlexibleSpace();
             _autoRefresh = GUILayout.Toggle(_autoRefresh, "Auto", EditorStyles.toolbarButton, GUILayout.Width(45));
             _refreshIntervalSeconds = EditorGUILayout.Slider(_refreshIntervalSeconds, 0.2f, 5f, GUILayout.Width(140));
@@ -178,6 +188,11 @@ namespace MVI.Editor
                 SaveSelectedTimelineJsonToFile(store);
             }
 
+            if (GUILayout.Button("Copy Trace", GUILayout.Width(95)))
+            {
+                CopySelectedMiddlewareTraceToClipboard(store);
+            }
+
             GUILayout.FlexibleSpace();
             EditorGUILayout.EndHorizontal();
 
@@ -207,6 +222,29 @@ namespace MVI.Editor
             }
 
             EditorGUILayout.EndHorizontal();
+
+            var sampling = MviDevTools.SamplingOptions;
+            var includedKindsText = sampling.IncludedKinds == null || sampling.IncludedKinds.Count == 0
+                ? "*"
+                : string.Join(",", sampling.GetIncludedKindsDisplay());
+            EditorGUILayout.LabelField(
+                $"Sampling: rate={sampling.SampleRate:0.###}, included={includedKindsText}, excludedStores={sampling.GetExcludedStoreTypeDisplay().Length}",
+                EditorStyles.miniLabel);
+
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("Use Filters As Sampling", GUILayout.Width(180)))
+            {
+                ApplyFiltersToSamplingKinds();
+            }
+
+            if (GUILayout.Button("Clear Sampling Kinds", GUILayout.Width(160)))
+            {
+                var options = MviDevTools.SamplingOptions;
+                options.IncludedKinds.Clear();
+                MviDevTools.SamplingOptions = options;
+            }
+
+            EditorGUILayout.EndHorizontal();
             EditorGUILayout.EndVertical();
         }
 
@@ -229,11 +267,13 @@ namespace MVI.Editor
                 return;
             }
 
+            DrawTimelineStatsPanel(store);
+
             _timelineScroll = EditorGUILayout.BeginScrollView(_timelineScroll);
             for (var i = 0; i < timeline.Count; i++)
             {
                 var entry = timeline[i];
-                if (!_filters.TryGetValue(entry.Kind, out var enabled) || !enabled)
+                if (!IsEventEnabled(entry))
                 {
                     continue;
                 }
@@ -389,7 +429,7 @@ namespace MVI.Editor
             return MviDevTools.ExportTimeline(
                 store,
                 includePayloadDetails: _showPayloadDetails,
-                filter: entry => _filters.TryGetValue(entry.Kind, out var enabled) && enabled);
+                filter: IsEventEnabled);
         }
 
         private string BuildFilteredTimelineJson(Store store)
@@ -397,7 +437,74 @@ namespace MVI.Editor
             return MviDevTools.ExportTimelineJson(
                 store,
                 includePayloadDetails: _showPayloadDetails,
-                filter: entry => _filters.TryGetValue(entry.Kind, out var enabled) && enabled);
+                filter: IsEventEnabled);
+        }
+
+        private void ApplyFiltersToSamplingKinds()
+        {
+            var options = MviDevTools.SamplingOptions;
+            options.IncludedKinds.Clear();
+
+            foreach (var filter in _filters)
+            {
+                if (!filter.Value)
+                {
+                    continue;
+                }
+
+                options.IncludedKinds.Add(filter.Key);
+            }
+
+            MviDevTools.SamplingOptions = options;
+        }
+
+        private bool IsEventEnabled(MviTimelineEvent entry)
+        {
+            return entry != null
+                   && _filters.TryGetValue(entry.Kind, out var enabled)
+                   && enabled;
+        }
+
+        private void DrawTimelineStatsPanel(Store store)
+        {
+            var stats = MviDevTools.GetTimelineStats(store, IsEventEnabled);
+            var summary = MviDevTools.ExportTimelineSummary(store, IsEventEnabled);
+
+            EditorGUILayout.BeginVertical("HelpBox");
+            EditorGUILayout.LabelField("Summary", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField(summary, EditorStyles.miniLabel);
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("Copy Summary", GUILayout.Width(120)))
+            {
+                EditorGUIUtility.systemCopyBuffer = summary;
+                Debug.Log($"[MVI-DevTools] Timeline summary copied. chars={summary.Length}");
+            }
+
+            if (GUILayout.Button("Copy Middleware Trace", GUILayout.Width(180)))
+            {
+                CopySelectedMiddlewareTraceToClipboard(store);
+            }
+
+            EditorGUILayout.EndHorizontal();
+
+            if (stats.TotalCount > 0)
+            {
+                var kinds = (MviTimelineEventKind[])Enum.GetValues(typeof(MviTimelineEventKind));
+                for (var i = 0; i < kinds.Length; i++)
+                {
+                    var kind = kinds[i];
+                    var count = stats.GetCount(kind);
+                    if (count <= 0)
+                    {
+                        continue;
+                    }
+
+                    var percentage = (double)count * 100d / stats.TotalCount;
+                    EditorGUILayout.LabelField($"{kind}: {count} ({percentage:0.##}%)", EditorStyles.miniLabel);
+                }
+            }
+
+            EditorGUILayout.EndVertical();
         }
 
         private void CopySelectedTimelineJsonToClipboard(Store store)
@@ -442,6 +549,19 @@ namespace MVI.Editor
             {
                 Debug.LogException(ex);
             }
+        }
+
+        private void CopySelectedMiddlewareTraceToClipboard(Store store)
+        {
+            var content = MviDevTools.ExportMiddlewareTrace(store);
+            if (string.IsNullOrEmpty(content))
+            {
+                Debug.Log("[MVI-DevTools] Middleware trace is empty.");
+                return;
+            }
+
+            EditorGUIUtility.systemCopyBuffer = content;
+            Debug.Log($"[MVI-DevTools] Middleware trace copied. chars={content.Length}");
         }
     }
 }

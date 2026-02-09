@@ -19,6 +19,8 @@ namespace MVI
         public static IStoreStatePersistence DefaultStatePersistence { get; set; }
 
         public static IMviErrorStrategy DefaultErrorStrategy { get; set; }
+
+        public static StoreProfile DefaultProfile { get; set; }
     }
 
     // 默认的内存持久化实现（适用于测试与轻量场景）。

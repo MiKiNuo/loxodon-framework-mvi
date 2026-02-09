@@ -3,9 +3,63 @@ using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Text;
 using UnityEngine;
+using Random = System.Random;
 
 namespace MVI
 {
+    [Serializable]
+    public sealed class MviDevToolsSamplingOptions
+    {
+        public double SampleRate { get; set; } = 1d;
+
+        public HashSet<MviTimelineEventKind> IncludedKinds { get; set; } = new();
+
+        public HashSet<string> ExcludedStoreTypeFullNames { get; set; } = new(StringComparer.Ordinal);
+
+        public MviDevToolsSamplingOptions Clone()
+        {
+            return new MviDevToolsSamplingOptions
+            {
+                SampleRate = SampleRate,
+                IncludedKinds = IncludedKinds != null
+                    ? new HashSet<MviTimelineEventKind>(IncludedKinds)
+                    : new HashSet<MviTimelineEventKind>(),
+                ExcludedStoreTypeFullNames = ExcludedStoreTypeFullNames != null
+                    ? new HashSet<string>(ExcludedStoreTypeFullNames, StringComparer.Ordinal)
+                    : new HashSet<string>(StringComparer.Ordinal)
+            };
+        }
+
+        public string[] GetIncludedKindsDisplay()
+        {
+            if (IncludedKinds == null || IncludedKinds.Count == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            var values = new List<string>(IncludedKinds.Count);
+            foreach (var kind in IncludedKinds)
+            {
+                values.Add(kind.ToString());
+            }
+
+            values.Sort(StringComparer.Ordinal);
+            return values.ToArray();
+        }
+
+        public string[] GetExcludedStoreTypeDisplay()
+        {
+            if (ExcludedStoreTypeFullNames == null || ExcludedStoreTypeFullNames.Count == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            var values = new List<string>(ExcludedStoreTypeFullNames);
+            values.Sort(StringComparer.Ordinal);
+            return values.ToArray();
+        }
+    }
+
     public enum MviTimelineEventKind
     {
         Intent = 0,
@@ -16,7 +70,44 @@ namespace MVI
         Replay = 5,
         Undo = 6,
         Redo = 7,
-        TimeTravel = 8
+        TimeTravel = 8,
+        Middleware = 9
+    }
+
+    [Serializable]
+    public sealed class MviMiddlewareTraceEvent
+    {
+        public MviMiddlewareTraceEvent(
+            string correlationId,
+            int attempt,
+            StoreMiddlewareStage stage,
+            string middlewareType,
+            string message = null,
+            string exceptionType = null,
+            string exceptionMessage = null)
+        {
+            CorrelationId = correlationId ?? string.Empty;
+            Attempt = attempt < 0 ? 0 : attempt;
+            Stage = stage;
+            MiddlewareType = middlewareType ?? string.Empty;
+            Message = message ?? string.Empty;
+            ExceptionType = exceptionType ?? string.Empty;
+            ExceptionMessage = exceptionMessage ?? string.Empty;
+        }
+
+        public string CorrelationId { get; }
+
+        public int Attempt { get; }
+
+        public StoreMiddlewareStage Stage { get; }
+
+        public string MiddlewareType { get; }
+
+        public string Message { get; }
+
+        public string ExceptionType { get; }
+
+        public string ExceptionMessage { get; }
     }
 
     public sealed class MviTimelineEvent
@@ -77,11 +168,45 @@ namespace MVI
         }
     }
 
+    /// <summary>
+    /// 时间线统计快照。
+    /// </summary>
+    public sealed class MviTimelineStats
+    {
+        private readonly Dictionary<MviTimelineEventKind, int> _countsByKind;
+
+        internal MviTimelineStats(
+            int totalCount,
+            DateTime? firstTimestampUtc,
+            DateTime? lastTimestampUtc,
+            Dictionary<MviTimelineEventKind, int> countsByKind)
+        {
+            TotalCount = totalCount < 0 ? 0 : totalCount;
+            FirstTimestampUtc = firstTimestampUtc;
+            LastTimestampUtc = lastTimestampUtc;
+            _countsByKind = countsByKind ?? new Dictionary<MviTimelineEventKind, int>();
+        }
+
+        public int TotalCount { get; }
+
+        public DateTime? FirstTimestampUtc { get; }
+
+        public DateTime? LastTimestampUtc { get; }
+
+        public IReadOnlyDictionary<MviTimelineEventKind, int> CountsByKind => _countsByKind;
+
+        public int GetCount(MviTimelineEventKind kind)
+        {
+            return _countsByKind.TryGetValue(kind, out var count) ? count : 0;
+        }
+    }
+
     public static class MviDevTools
     {
         [Serializable]
         private sealed class TimelineExportEnvelope
         {
+            public TimelineSamplingExport sampling;
             public TimelineExportEntry[] events;
         }
 
@@ -96,9 +221,21 @@ namespace MVI
             public string payload;
         }
 
+        [Serializable]
+        private sealed class TimelineSamplingExport
+        {
+            public bool enabled;
+            public double sampleRate;
+            public string[] includedKinds;
+            public string[] excludedStoreTypes;
+        }
+
         private static readonly ConditionalWeakTable<Store, MviStoreTimeline> Timelines = new();
         private static readonly List<WeakReference<Store>> TrackedStores = new();
         private static readonly object SyncRoot = new();
+        private static readonly object SamplingRandomSyncRoot = new();
+        private static readonly Random SamplingRandom = new();
+        private static MviDevToolsSamplingOptions _samplingOptions = new();
 
         // 启用后记录 Store 时间线（Intent/Result/State/Effect/Error）。
         public static bool Enabled { get; set; }
@@ -106,9 +243,33 @@ namespace MVI
         // 单个 Store 最多保留多少条事件（<=0 表示不限制）。
         public static int MaxEventsPerStore { get; set; } = 1000;
 
+        // 时间线采样配置。
+        public static MviDevToolsSamplingOptions SamplingOptions
+        {
+            get
+            {
+                lock (SyncRoot)
+                {
+                    return (_samplingOptions ?? new MviDevToolsSamplingOptions()).Clone();
+                }
+            }
+            set
+            {
+                lock (SyncRoot)
+                {
+                    _samplingOptions = (value ?? new MviDevToolsSamplingOptions()).Clone();
+                }
+            }
+        }
+
         internal static void Track(Store store, MviTimelineEventKind kind, object payload = null, string note = null)
         {
             if (!Enabled || store == null)
+            {
+                return;
+            }
+
+            if (!ShouldTrackWithSampling(store, kind))
             {
                 return;
             }
@@ -168,6 +329,184 @@ namespace MVI
         }
 
         /// <summary>
+        /// 获取指定 Store 某条中间件关联链路（CorrelationId）的时间线事件。
+        /// </summary>
+        /// <param name="store">目标 Store。</param>
+        /// <param name="correlationId">链路 ID；为空时默认取最近一条链路。</param>
+        public static IReadOnlyList<MviTimelineEvent> GetMiddlewareTraceTimeline(Store store, string correlationId = null)
+        {
+            var snapshot = GetTimelineSnapshot(store);
+            if (snapshot == null || snapshot.Count == 0)
+            {
+                return Array.Empty<MviTimelineEvent>();
+            }
+
+            var targetCorrelationId = string.IsNullOrWhiteSpace(correlationId)
+                ? ResolveLatestMiddlewareCorrelationId(snapshot)
+                : correlationId.Trim();
+            if (string.IsNullOrWhiteSpace(targetCorrelationId))
+            {
+                return Array.Empty<MviTimelineEvent>();
+            }
+
+            var result = new List<MviTimelineEvent>();
+            for (var i = 0; i < snapshot.Count; i++)
+            {
+                var entry = snapshot[i];
+                if (entry == null || entry.Kind != MviTimelineEventKind.Middleware)
+                {
+                    continue;
+                }
+
+                if (entry.Payload is not MviMiddlewareTraceEvent trace)
+                {
+                    continue;
+                }
+
+                if (!string.Equals(trace.CorrelationId, targetCorrelationId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                result.Add(entry);
+            }
+
+            return result.ToArray();
+        }
+
+        /// <summary>
+        /// 导出指定 Store 某条中间件链路的可读文本（默认导出最近一条链路）。
+        /// </summary>
+        public static string ExportMiddlewareTrace(Store store, string correlationId = null, bool includeExceptionDetails = true)
+        {
+            var traceTimeline = GetMiddlewareTraceTimeline(store, correlationId);
+            if (traceTimeline == null || traceTimeline.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            var resolvedCorrelationId = traceTimeline[0].Payload is MviMiddlewareTraceEvent first
+                ? first.CorrelationId
+                : correlationId ?? string.Empty;
+            var sb = new StringBuilder();
+            sb.Append("[middleware-trace] cid=")
+                .Append(resolvedCorrelationId)
+                .Append(", count=")
+                .Append(traceTimeline.Count)
+                .AppendLine();
+
+            for (var i = 0; i < traceTimeline.Count; i++)
+            {
+                var entry = traceTimeline[i];
+                if (entry?.Payload is not MviMiddlewareTraceEvent trace)
+                {
+                    continue;
+                }
+
+                sb.Append('#')
+                    .Append(entry.Sequence)
+                    .Append(' ')
+                    .Append(entry.TimestampUtc.ToLocalTime().ToString("HH:mm:ss.fff"))
+                    .Append(" stage=")
+                    .Append(trace.Stage)
+                    .Append(" attempt=")
+                    .Append(trace.Attempt)
+                    .Append(" middleware=")
+                    .Append(string.IsNullOrWhiteSpace(trace.MiddlewareType) ? "-" : trace.MiddlewareType)
+                    .Append(" message=")
+                    .Append(trace.Message ?? string.Empty);
+
+                if (includeExceptionDetails && !string.IsNullOrWhiteSpace(trace.ExceptionType))
+                {
+                    sb.Append(" exception=")
+                        .Append(trace.ExceptionType)
+                        .Append(':')
+                        .Append(trace.ExceptionMessage ?? string.Empty);
+                }
+
+                sb.AppendLine();
+            }
+
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// 获取指定 Store 的时间线统计快照（总量、分类型计数、首尾时间）。
+        /// </summary>
+        public static MviTimelineStats GetTimelineStats(Store store, Func<MviTimelineEvent, bool> filter = null)
+        {
+            var snapshot = GetTimelineSnapshot(store);
+            if (snapshot == null || snapshot.Count == 0)
+            {
+                return new MviTimelineStats(0, null, null, new Dictionary<MviTimelineEventKind, int>());
+            }
+
+            var totalCount = 0;
+            DateTime? firstTimestampUtc = null;
+            DateTime? lastTimestampUtc = null;
+            var countsByKind = new Dictionary<MviTimelineEventKind, int>();
+
+            for (var i = 0; i < snapshot.Count; i++)
+            {
+                var entry = snapshot[i];
+                if (entry == null)
+                {
+                    continue;
+                }
+
+                if (filter != null && !filter(entry))
+                {
+                    continue;
+                }
+
+                totalCount++;
+                if (firstTimestampUtc == null || entry.TimestampUtc < firstTimestampUtc.Value)
+                {
+                    firstTimestampUtc = entry.TimestampUtc;
+                }
+
+                if (lastTimestampUtc == null || entry.TimestampUtc > lastTimestampUtc.Value)
+                {
+                    lastTimestampUtc = entry.TimestampUtc;
+                }
+
+                countsByKind.TryGetValue(entry.Kind, out var count);
+                countsByKind[entry.Kind] = count + 1;
+            }
+
+            return new MviTimelineStats(totalCount, firstTimestampUtc, lastTimestampUtc, countsByKind);
+        }
+
+        /// <summary>
+        /// 导出时间线统计摘要文本（可用于日志或问题单附带信息）。
+        /// </summary>
+        public static string ExportTimelineSummary(Store store, Func<MviTimelineEvent, bool> filter = null)
+        {
+            var stats = GetTimelineStats(store, filter);
+            var sampling = GetSamplingSnapshot();
+            var sb = new StringBuilder();
+            sb.Append("total=").Append(stats.TotalCount);
+            sb.Append(", first=").Append(stats.FirstTimestampUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff") ?? "-");
+            sb.Append(", last=").Append(stats.LastTimestampUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff") ?? "-");
+            sb.Append(", sampleRate=").Append(sampling.sampleRate.ToString("0.###"));
+
+            var kinds = (MviTimelineEventKind[])Enum.GetValues(typeof(MviTimelineEventKind));
+            for (var i = 0; i < kinds.Length; i++)
+            {
+                var kind = kinds[i];
+                var count = stats.GetCount(kind);
+                if (count <= 0)
+                {
+                    continue;
+                }
+
+                sb.Append(", ").Append(kind).Append('=').Append(count);
+            }
+
+            return sb.ToString();
+        }
+
+        /// <summary>
         /// 导出指定 Store 的时间线文本，便于问题复现与离线分析。
         /// </summary>
         public static string ExportTimeline(Store store, bool includePayloadDetails = false, Func<MviTimelineEvent, bool> filter = null)
@@ -178,7 +517,22 @@ namespace MVI
                 return string.Empty;
             }
 
+            var sampling = GetSamplingSnapshot();
             var sb = new StringBuilder();
+            sb.Append("[sampling] enabled=")
+                .Append(Enabled)
+                .Append(", rate=")
+                .Append(sampling.sampleRate.ToString("0.###"))
+                .Append(", included=")
+                .Append(sampling.includedKinds == null || sampling.includedKinds.Length == 0
+                    ? "*"
+                    : string.Join("|", sampling.includedKinds))
+                .Append(", excludedStores=")
+                .Append(sampling.excludedStoreTypes == null || sampling.excludedStoreTypes.Length == 0
+                    ? "-"
+                    : string.Join("|", sampling.excludedStoreTypes))
+                .AppendLine();
+
             for (var i = 0; i < snapshot.Count; i++)
             {
                 var entry = snapshot[i];
@@ -253,10 +607,114 @@ namespace MVI
 
             var envelope = new TimelineExportEnvelope
             {
+                sampling = GetSamplingSnapshot(),
                 events = exportEntries.ToArray()
             };
 
             return JsonUtility.ToJson(envelope, prettyPrint: true);
+        }
+
+        private static bool ShouldTrackWithSampling(Store store, MviTimelineEventKind kind)
+        {
+            var options = GetSamplingOptionsSnapshot();
+            if (options == null)
+            {
+                return true;
+            }
+
+            var normalizedRate = options.SampleRate;
+            if (normalizedRate < 0d)
+            {
+                normalizedRate = 0d;
+            }
+            else if (normalizedRate > 1d)
+            {
+                normalizedRate = 1d;
+            }
+
+            if (normalizedRate <= 0d)
+            {
+                return false;
+            }
+
+            if (options.IncludedKinds != null && options.IncludedKinds.Count > 0 && !options.IncludedKinds.Contains(kind))
+            {
+                return false;
+            }
+
+            var storeTypeName = store.GetType().FullName;
+            if (!string.IsNullOrWhiteSpace(storeTypeName)
+                && options.ExcludedStoreTypeFullNames != null
+                && options.ExcludedStoreTypeFullNames.Contains(storeTypeName))
+            {
+                return false;
+            }
+
+            if (normalizedRate >= 1d)
+            {
+                return true;
+            }
+
+            lock (SamplingRandomSyncRoot)
+            {
+                return SamplingRandom.NextDouble() <= normalizedRate;
+            }
+        }
+
+        private static TimelineSamplingExport GetSamplingSnapshot()
+        {
+            var options = GetSamplingOptionsSnapshot() ?? new MviDevToolsSamplingOptions();
+            var normalizedRate = options.SampleRate;
+            if (normalizedRate < 0d)
+            {
+                normalizedRate = 0d;
+            }
+            else if (normalizedRate > 1d)
+            {
+                normalizedRate = 1d;
+            }
+
+            return new TimelineSamplingExport
+            {
+                enabled = Enabled,
+                sampleRate = normalizedRate,
+                includedKinds = options.GetIncludedKindsDisplay(),
+                excludedStoreTypes = options.GetExcludedStoreTypeDisplay()
+            };
+        }
+
+        private static MviDevToolsSamplingOptions GetSamplingOptionsSnapshot()
+        {
+            lock (SyncRoot)
+            {
+                return (_samplingOptions ?? new MviDevToolsSamplingOptions()).Clone();
+            }
+        }
+
+        private static string ResolveLatestMiddlewareCorrelationId(IReadOnlyList<MviTimelineEvent> snapshot)
+        {
+            if (snapshot == null || snapshot.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            for (var i = snapshot.Count - 1; i >= 0; i--)
+            {
+                var entry = snapshot[i];
+                if (entry == null || entry.Kind != MviTimelineEventKind.Middleware)
+                {
+                    continue;
+                }
+
+                if (entry.Payload is not MviMiddlewareTraceEvent trace || string.IsNullOrWhiteSpace(trace.CorrelationId))
+                {
+                    continue;
+                }
+
+                return trace.CorrelationId;
+            }
+
+            return string.Empty;
         }
 
         /// <summary>

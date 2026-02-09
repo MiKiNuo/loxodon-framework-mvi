@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -57,19 +58,65 @@ namespace MVI
                 }
 
                 var decision = rule.Decide(context);
-                return new ValueTask<MviErrorDecision>(decision.IsConfigured ? decision : _defaultDecision);
+                if (!decision.IsConfigured)
+                {
+                    decision = _defaultDecision;
+                }
+
+                if (!decision.Trace.IsConfigured)
+                {
+                    decision = decision.WithTrace(new MviErrorDecisionTrace(
+                        ruleId: rule.RuleId,
+                        priority: rule.Priority,
+                        phase: context.Phase,
+                        attempt: context.Attempt,
+                        note: rule.Note,
+                        isMatched: true));
+                }
+
+                return new ValueTask<MviErrorDecision>(decision);
             }
 
-            return new ValueTask<MviErrorDecision>(_defaultDecision);
+            var fallbackDecision = _defaultDecision;
+            if (!fallbackDecision.Trace.IsConfigured)
+            {
+                fallbackDecision = fallbackDecision.WithTrace(new MviErrorDecisionTrace(
+                    ruleId: "default",
+                    priority: int.MaxValue,
+                    phase: context.Phase,
+                    attempt: context.Attempt,
+                    note: "default-decision",
+                    isMatched: false));
+            }
+
+            return new ValueTask<MviErrorDecision>(fallbackDecision);
         }
 
         internal readonly struct Rule
         {
-            public Rule(Func<MviErrorContext, bool> match, Func<MviErrorContext, MviErrorDecision> decide)
+            public Rule(
+                string ruleId,
+                int priority,
+                int order,
+                string note,
+                Func<MviErrorContext, bool> match,
+                Func<MviErrorContext, MviErrorDecision> decide)
             {
+                RuleId = string.IsNullOrWhiteSpace(ruleId) ? "rule" : ruleId;
+                Priority = priority;
+                Order = order;
+                Note = note ?? string.Empty;
                 Match = match ?? throw new ArgumentNullException(nameof(match));
                 Decide = decide ?? throw new ArgumentNullException(nameof(decide));
             }
+
+            public string RuleId { get; }
+
+            public int Priority { get; }
+
+            public int Order { get; }
+
+            public string Note { get; }
 
             public Func<MviErrorContext, bool> Match { get; }
 
@@ -82,10 +129,13 @@ namespace MVI
     /// </summary>
     public sealed class TemplateMviErrorStrategyBuilder
     {
+        public const int DefaultPriority = 1000;
+
         private static readonly object JitterRandomSyncRoot = new();
         private static readonly Random JitterRandom = new();
         private readonly List<TemplateMviErrorStrategy.Rule> _rules = new();
         private MviErrorDecision _defaultDecision = MviErrorDecision.Emit();
+        private int _ruleOrder;
 
         public TemplateMviErrorStrategyBuilder UseDefaultDecision(MviErrorDecision decision)
         {
@@ -93,86 +143,92 @@ namespace MVI
             return this;
         }
 
-        public TemplateMviErrorStrategyBuilder ForException<TException>(Func<MviErrorContext, MviErrorDecision> decision)
+        public TemplateMviErrorStrategyBuilder ForException<TException>(
+            Func<MviErrorContext, MviErrorDecision> decision,
+            string ruleId = null,
+            int priority = DefaultPriority)
             where TException : Exception
         {
-            if (decision == null)
-            {
-                return this;
-            }
-
-            _rules.Add(new TemplateMviErrorStrategy.Rule(
+            return AddRule(
+                ruleId: ResolveRuleId(ruleId, $"exception:{typeof(TException).Name}"),
+                priority: priority,
+                note: $"Exception={typeof(TException).Name}",
                 match: context => context.Exception is TException,
-                decide: decision));
-            return this;
+                decide: decision);
         }
 
-        public TemplateMviErrorStrategyBuilder ForExceptionInPhase<TException>(MviErrorPhase phase, Func<MviErrorContext, MviErrorDecision> decision)
+        public TemplateMviErrorStrategyBuilder ForExceptionInPhase<TException>(
+            MviErrorPhase phase,
+            Func<MviErrorContext, MviErrorDecision> decision,
+            string ruleId = null,
+            int priority = DefaultPriority)
             where TException : Exception
         {
-            if (decision == null)
-            {
-                return this;
-            }
-
-            _rules.Add(new TemplateMviErrorStrategy.Rule(
+            return AddRule(
+                ruleId: ResolveRuleId(ruleId, $"exception:{typeof(TException).Name}:phase:{phase}"),
+                priority: priority,
+                note: $"Exception={typeof(TException).Name},Phase={phase}",
                 match: context => context.Phase == phase && context.Exception is TException,
-                decide: decision));
-            return this;
+                decide: decision);
         }
 
-        public TemplateMviErrorStrategyBuilder ForBusinessCode(int businessCode, Func<MviErrorContext, MviErrorDecision> decision)
+        public TemplateMviErrorStrategyBuilder ForBusinessCode(
+            int businessCode,
+            Func<MviErrorContext, MviErrorDecision> decision,
+            string ruleId = null,
+            int priority = DefaultPriority)
         {
-            if (decision == null)
-            {
-                return this;
-            }
-
-            _rules.Add(new TemplateMviErrorStrategy.Rule(
+            return AddRule(
+                ruleId: ResolveRuleId(ruleId, $"business:{businessCode}"),
+                priority: priority,
+                note: $"BusinessCode={businessCode}",
                 match: context => context.Exception is IBusinessCodeException codeException && codeException.BusinessCode == businessCode,
-                decide: decision));
-            return this;
+                decide: decision);
         }
 
-        public TemplateMviErrorStrategyBuilder ForBusinessCodeInPhase(int businessCode, MviErrorPhase phase, Func<MviErrorContext, MviErrorDecision> decision)
+        public TemplateMviErrorStrategyBuilder ForBusinessCodeInPhase(
+            int businessCode,
+            MviErrorPhase phase,
+            Func<MviErrorContext, MviErrorDecision> decision,
+            string ruleId = null,
+            int priority = DefaultPriority)
         {
-            if (decision == null)
-            {
-                return this;
-            }
-
-            _rules.Add(new TemplateMviErrorStrategy.Rule(
+            return AddRule(
+                ruleId: ResolveRuleId(ruleId, $"business:{businessCode}:phase:{phase}"),
+                priority: priority,
+                note: $"BusinessCode={businessCode},Phase={phase}",
                 match: context => context.Phase == phase
                                   && context.Exception is IBusinessCodeException codeException
                                   && codeException.BusinessCode == businessCode,
-                decide: decision));
-            return this;
+                decide: decision);
         }
 
-        public TemplateMviErrorStrategyBuilder ForPhase(MviErrorPhase phase, Func<MviErrorContext, MviErrorDecision> decision)
+        public TemplateMviErrorStrategyBuilder ForPhase(
+            MviErrorPhase phase,
+            Func<MviErrorContext, MviErrorDecision> decision,
+            string ruleId = null,
+            int priority = DefaultPriority)
         {
-            if (decision == null)
-            {
-                return this;
-            }
-
-            _rules.Add(new TemplateMviErrorStrategy.Rule(
+            return AddRule(
+                ruleId: ResolveRuleId(ruleId, $"phase:{phase}"),
+                priority: priority,
+                note: $"Phase={phase}",
                 match: context => context.Phase == phase,
-                decide: decision));
-            return this;
+                decide: decision);
         }
 
-        public TemplateMviErrorStrategyBuilder ForPredicate(Func<MviErrorContext, bool> predicate, Func<MviErrorContext, MviErrorDecision> decision)
+        public TemplateMviErrorStrategyBuilder ForPredicate(
+            Func<MviErrorContext, bool> predicate,
+            Func<MviErrorContext, MviErrorDecision> decision,
+            string ruleId = null,
+            int priority = DefaultPriority)
         {
-            if (predicate == null || decision == null)
-            {
-                return this;
-            }
-
-            _rules.Add(new TemplateMviErrorStrategy.Rule(
+            return AddRule(
+                ruleId: ResolveRuleId(ruleId, "predicate"),
+                priority: priority,
+                note: "CustomPredicate",
                 match: predicate,
-                decide: decision));
-            return this;
+                decide: decision);
         }
 
         public TemplateMviErrorStrategyBuilder UseExponentialBackoffForException<TException>(
@@ -180,7 +236,9 @@ namespace MVI
             int baseDelayMs,
             int maxDelayMs = 5000,
             bool emitErrorOnRetry = false,
-            MviErrorDecision? exhaustedDecision = null)
+            MviErrorDecision? exhaustedDecision = null,
+            string ruleId = null,
+            int priority = DefaultPriority)
             where TException : Exception
         {
             var retryCount = Math.Max(0, maxRetryCount);
@@ -206,7 +264,7 @@ namespace MVI
                 }
 
                 return exhausted;
-            });
+            }, ruleId: ruleId, priority: priority);
         }
 
         public TemplateMviErrorStrategyBuilder UseExponentialBackoffForExceptionInPhase<TException>(
@@ -215,7 +273,9 @@ namespace MVI
             int baseDelayMs,
             int maxDelayMs = 5000,
             bool emitErrorOnRetry = false,
-            MviErrorDecision? exhaustedDecision = null)
+            MviErrorDecision? exhaustedDecision = null,
+            string ruleId = null,
+            int priority = DefaultPriority)
             where TException : Exception
         {
             var retryCount = Math.Max(0, maxRetryCount);
@@ -241,7 +301,7 @@ namespace MVI
                 }
 
                 return exhausted;
-            });
+            }, ruleId: ruleId, priority: priority);
         }
 
         public TemplateMviErrorStrategyBuilder UseExponentialBackoffForExceptionWithJitter<TException>(
@@ -250,7 +310,9 @@ namespace MVI
             int maxDelayMs = 5000,
             double jitterRate = 0.2d,
             bool emitErrorOnRetry = false,
-            MviErrorDecision? exhaustedDecision = null)
+            MviErrorDecision? exhaustedDecision = null,
+            string ruleId = null,
+            int priority = DefaultPriority)
             where TException : Exception
         {
             var retryCount = Math.Max(0, maxRetryCount);
@@ -281,7 +343,7 @@ namespace MVI
                 }
 
                 return exhausted;
-            });
+            }, ruleId: ruleId, priority: priority);
         }
 
         public TemplateMviErrorStrategyBuilder UseExponentialBackoffForExceptionInPhaseWithJitter<TException>(
@@ -291,7 +353,9 @@ namespace MVI
             int maxDelayMs = 5000,
             double jitterRate = 0.2d,
             bool emitErrorOnRetry = false,
-            MviErrorDecision? exhaustedDecision = null)
+            MviErrorDecision? exhaustedDecision = null,
+            string ruleId = null,
+            int priority = DefaultPriority)
             where TException : Exception
         {
             var retryCount = Math.Max(0, maxRetryCount);
@@ -322,7 +386,46 @@ namespace MVI
                 }
 
                 return exhausted;
-            });
+            }, ruleId: ruleId, priority: priority);
+        }
+
+        public TemplateMviErrorStrategy Build()
+        {
+            var sortedRules = _rules
+                .OrderBy(rule => rule.Priority)
+                .ThenBy(rule => rule.Order)
+                .ToArray();
+            return new TemplateMviErrorStrategy(sortedRules, _defaultDecision);
+        }
+
+        private TemplateMviErrorStrategyBuilder AddRule(
+            string ruleId,
+            int priority,
+            string note,
+            Func<MviErrorContext, bool> match,
+            Func<MviErrorContext, MviErrorDecision> decide)
+        {
+            if (match == null || decide == null)
+            {
+                return this;
+            }
+
+            _ruleOrder++;
+            _rules.Add(new TemplateMviErrorStrategy.Rule(
+                ruleId: ruleId,
+                priority: priority,
+                order: _ruleOrder,
+                note: note,
+                match: match,
+                decide: decide));
+            return this;
+        }
+
+        private static string ResolveRuleId(string inputRuleId, string fallback)
+        {
+            return string.IsNullOrWhiteSpace(inputRuleId)
+                ? $"auto:{fallback}"
+                : inputRuleId;
         }
 
         private static int ApplyJitter(int baseDelayMs, double jitterRate)
@@ -341,11 +444,6 @@ namespace MVI
             var jittered = baseDelayMs + baseDelayMs * jitterRate * sample;
             var normalized = (int)Math.Round(jittered, MidpointRounding.AwayFromZero);
             return Math.Max(0, normalized);
-        }
-
-        public TemplateMviErrorStrategy Build()
-        {
-            return new TemplateMviErrorStrategy(_rules.ToArray(), _defaultDecision);
         }
     }
 }

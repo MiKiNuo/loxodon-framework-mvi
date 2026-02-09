@@ -126,6 +126,43 @@ namespace MVI
     }
 
     /// <summary>
+    /// 限流拒绝异常。
+    /// </summary>
+    public sealed class RateLimitExceededException : Exception
+    {
+        public RateLimitExceededException(string key, int limit, TimeSpan window)
+            : base($"Rate limit exceeded. key={key ?? string.Empty}, limit={Math.Max(1, limit)}, windowMs={(int)Math.Max(1d, window.TotalMilliseconds)}")
+        {
+            Key = key ?? string.Empty;
+            Limit = Math.Max(1, limit);
+            Window = window <= TimeSpan.Zero ? TimeSpan.FromMilliseconds(1) : window;
+        }
+
+        public string Key { get; }
+
+        public int Limit { get; }
+
+        public TimeSpan Window { get; }
+    }
+
+    /// <summary>
+    /// 熔断器打开异常。
+    /// </summary>
+    public sealed class CircuitBreakerOpenException : Exception
+    {
+        public CircuitBreakerOpenException(string key, TimeSpan retryAfter)
+            : base($"Circuit is open. key={key ?? string.Empty}, retryAfterMs={(int)Math.Max(0d, retryAfter.TotalMilliseconds)}")
+        {
+            Key = key ?? string.Empty;
+            RetryAfter = retryAfter < TimeSpan.Zero ? TimeSpan.Zero : retryAfter;
+        }
+
+        public string Key { get; }
+
+        public TimeSpan RetryAfter { get; }
+    }
+
+    /// <summary>
     /// 日志中间件：记录 Intent 的开始、结束、耗时与异常。
     /// </summary>
     public sealed class LoggingStoreMiddleware : IStoreMiddleware
@@ -260,6 +297,109 @@ namespace MVI
                 {
                     _inFlight.Remove(key);
                 }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 固定窗口限流中间件：同一 key 在窗口内超过阈值时丢弃或抛错。
+    /// </summary>
+    public sealed class RateLimitIntentMiddleware : IStoreMiddleware
+    {
+        private sealed class RateWindow
+        {
+            public DateTime WindowStartUtc;
+            public int Count;
+        }
+
+        private readonly int _limit;
+        private readonly TimeSpan _window;
+        private readonly Func<IIntent, string> _keyResolver;
+        private readonly bool _throwOnRejected;
+        private readonly Action<StoreMiddlewareContext, string> _onRejected;
+        private readonly Dictionary<string, RateWindow> _rateWindows = new(StringComparer.Ordinal);
+        private readonly object _syncRoot = new();
+
+        public RateLimitIntentMiddleware(
+            int limit,
+            TimeSpan window,
+            Func<IIntent, string> keyResolver = null,
+            bool throwOnRejected = false,
+            Action<StoreMiddlewareContext, string> onRejected = null)
+        {
+            _limit = Math.Max(1, limit);
+            _window = window <= TimeSpan.Zero ? TimeSpan.FromMilliseconds(1) : window;
+            _keyResolver = keyResolver ?? StoreMiddlewareIntentKeyResolvers.ByIntentType;
+            _throwOnRejected = throwOnRejected;
+            _onRejected = onRejected;
+        }
+
+        public async ValueTask<IMviResult> InvokeAsync(StoreMiddlewareContext context, StoreMiddlewareNext next)
+        {
+            if (context == null || next == null)
+            {
+                return default;
+            }
+
+            var key = _keyResolver(context.Intent) ?? string.Empty;
+            var now = DateTime.UtcNow;
+            var allowed = false;
+            lock (_syncRoot)
+            {
+                PruneExpiredLocked(now);
+                if (!_rateWindows.TryGetValue(key, out var rateWindow) || rateWindow == null)
+                {
+                    rateWindow = new RateWindow { WindowStartUtc = now, Count = 0 };
+                    _rateWindows[key] = rateWindow;
+                }
+
+                if (now - rateWindow.WindowStartUtc >= _window)
+                {
+                    rateWindow.WindowStartUtc = now;
+                    rateWindow.Count = 0;
+                }
+
+                if (rateWindow.Count < _limit)
+                {
+                    rateWindow.Count++;
+                    allowed = true;
+                }
+            }
+
+            if (!allowed)
+            {
+                _onRejected?.Invoke(context, key);
+                if (_throwOnRejected)
+                {
+                    throw new RateLimitExceededException(key, _limit, _window);
+                }
+
+                return default;
+            }
+
+            return await next(context);
+        }
+
+        private void PruneExpiredLocked(DateTime now)
+        {
+            if (_rateWindows.Count <= 512)
+            {
+                return;
+            }
+
+            var expired = new List<string>();
+            foreach (var pair in _rateWindows)
+            {
+                var value = pair.Value;
+                if (value == null || now - value.WindowStartUtc >= _window + _window)
+                {
+                    expired.Add(pair.Key);
+                }
+            }
+
+            for (var i = 0; i < expired.Count; i++)
+            {
+                _rateWindows.Remove(expired[i]);
             }
         }
     }
@@ -448,6 +588,182 @@ namespace MVI
 
             linkedCts.Cancel();
             throw new TimeoutException($"Intent execution timed out after {_timeout.TotalMilliseconds}ms.");
+        }
+    }
+
+    /// <summary>
+    /// 熔断中间件：连续失败达到阈值后临时打开熔断器，避免持续冲击下游。
+    /// </summary>
+    public sealed class CircuitBreakerIntentMiddleware : IStoreMiddleware
+    {
+        private sealed class CircuitState
+        {
+            public int ConsecutiveFailures;
+            public DateTime OpenUntilUtc;
+            public bool HalfOpenProbeInFlight;
+        }
+
+        private readonly int _failureThreshold;
+        private readonly TimeSpan _openDuration;
+        private readonly Func<IIntent, string> _keyResolver;
+        private readonly bool _throwOnOpen;
+        private readonly Action<StoreMiddlewareContext, string, Exception> _onOpened;
+        private readonly Action<StoreMiddlewareContext, string> _onClosed;
+        private readonly Action<StoreMiddlewareContext, string> _onRejected;
+        private readonly Dictionary<string, CircuitState> _states = new(StringComparer.Ordinal);
+        private readonly object _syncRoot = new();
+
+        public CircuitBreakerIntentMiddleware(
+            int failureThreshold,
+            TimeSpan openDuration,
+            Func<IIntent, string> keyResolver = null,
+            bool throwOnOpen = true,
+            Action<StoreMiddlewareContext, string, Exception> onOpened = null,
+            Action<StoreMiddlewareContext, string> onClosed = null,
+            Action<StoreMiddlewareContext, string> onRejected = null)
+        {
+            _failureThreshold = Math.Max(1, failureThreshold);
+            _openDuration = openDuration <= TimeSpan.Zero ? TimeSpan.FromMilliseconds(1) : openDuration;
+            _keyResolver = keyResolver ?? StoreMiddlewareIntentKeyResolvers.ByIntentType;
+            _throwOnOpen = throwOnOpen;
+            _onOpened = onOpened;
+            _onClosed = onClosed;
+            _onRejected = onRejected;
+        }
+
+        public async ValueTask<IMviResult> InvokeAsync(StoreMiddlewareContext context, StoreMiddlewareNext next)
+        {
+            if (context == null || next == null)
+            {
+                return default;
+            }
+
+            var key = _keyResolver(context.Intent) ?? string.Empty;
+            var halfOpenProbe = false;
+            TimeSpan retryAfter;
+            var state = EnterCircuit(key, out halfOpenProbe, out retryAfter);
+            if (state == null)
+            {
+                _onRejected?.Invoke(context, key);
+                if (_throwOnOpen)
+                {
+                    throw new CircuitBreakerOpenException(key, retryAfter);
+                }
+
+                return default;
+            }
+
+            try
+            {
+                var result = await next(context);
+                var closedByProbe = false;
+                lock (_syncRoot)
+                {
+                    if (halfOpenProbe || state.ConsecutiveFailures > 0 || state.OpenUntilUtc != DateTime.MinValue)
+                    {
+                        closedByProbe = halfOpenProbe && state.OpenUntilUtc == DateTime.MinValue;
+                        state.ConsecutiveFailures = 0;
+                        state.OpenUntilUtc = DateTime.MinValue;
+                        state.HalfOpenProbeInFlight = false;
+                    }
+                }
+
+                if (closedByProbe)
+                {
+                    _onClosed?.Invoke(context, key);
+                }
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                var opened = false;
+                lock (_syncRoot)
+                {
+                    if (halfOpenProbe)
+                    {
+                        opened = OpenCircuitLocked(state);
+                    }
+                    else
+                    {
+                        state.ConsecutiveFailures++;
+                        if (state.ConsecutiveFailures >= _failureThreshold)
+                        {
+                            opened = OpenCircuitLocked(state);
+                        }
+                    }
+                }
+
+                if (opened)
+                {
+                    _onOpened?.Invoke(context, key, ex);
+                }
+
+                throw;
+            }
+            finally
+            {
+                if (halfOpenProbe)
+                {
+                    lock (_syncRoot)
+                    {
+                        if (state.OpenUntilUtc == DateTime.MinValue)
+                        {
+                            state.HalfOpenProbeInFlight = false;
+                        }
+                    }
+                }
+            }
+        }
+
+        private CircuitState EnterCircuit(string key, out bool halfOpenProbe, out TimeSpan retryAfter)
+        {
+            halfOpenProbe = false;
+            retryAfter = TimeSpan.Zero;
+            lock (_syncRoot)
+            {
+                if (!_states.TryGetValue(key, out var state) || state == null)
+                {
+                    state = new CircuitState();
+                    _states[key] = state;
+                }
+
+                var now = DateTime.UtcNow;
+                if (state.OpenUntilUtc == DateTime.MinValue)
+                {
+                    return state;
+                }
+
+                if (state.OpenUntilUtc > now)
+                {
+                    retryAfter = state.OpenUntilUtc - now;
+                    return null;
+                }
+
+                if (state.HalfOpenProbeInFlight)
+                {
+                    retryAfter = TimeSpan.FromMilliseconds(1);
+                    return null;
+                }
+
+                // 熔断窗口结束后进入半开探测，放行一个请求验证恢复情况。
+                state.HalfOpenProbeInFlight = true;
+                halfOpenProbe = true;
+                return state;
+            }
+        }
+
+        private bool OpenCircuitLocked(CircuitState state)
+        {
+            if (state == null)
+            {
+                return false;
+            }
+
+            state.ConsecutiveFailures = 0;
+            state.HalfOpenProbeInFlight = false;
+            state.OpenUntilUtc = DateTime.UtcNow.Add(_openDuration);
+            return true;
         }
     }
 }

@@ -36,16 +36,75 @@ namespace MVI
         public MviErrorPhase Phase { get; }
     }
 
+    public readonly struct MviErrorDecisionTrace
+    {
+        public MviErrorDecisionTrace(
+            string ruleId,
+            int priority,
+            MviErrorPhase phase,
+            int attempt,
+            string note = null,
+            bool isMatched = true)
+        {
+            RuleId = ruleId ?? string.Empty;
+            Priority = priority;
+            Phase = phase;
+            Attempt = attempt < 0 ? 0 : attempt;
+            Note = note ?? string.Empty;
+            IsMatched = isMatched;
+            IsConfigured = true;
+        }
+
+        public string RuleId { get; }
+
+        public int Priority { get; }
+
+        public MviErrorPhase Phase { get; }
+
+        public int Attempt { get; }
+
+        public string Note { get; }
+
+        public bool IsMatched { get; }
+
+        public bool IsConfigured { get; }
+    }
+
     public readonly struct MviErrorDecision
     {
-        public MviErrorDecision(bool emitError, bool rethrow, int retryCount, TimeSpan retryDelay, IMviResult fallbackResult)
+        public MviErrorDecision(
+            bool emitError,
+            bool rethrow,
+            int retryCount,
+            TimeSpan retryDelay,
+            IMviResult fallbackResult,
+            MviErrorDecisionTrace trace = default)
         {
             EmitError = emitError;
             Rethrow = rethrow;
             RetryCount = retryCount < 0 ? 0 : retryCount;
             RetryDelay = retryDelay;
             FallbackResult = fallbackResult;
+            Trace = trace;
             IsConfigured = true;
+        }
+
+        private MviErrorDecision(
+            bool emitError,
+            bool rethrow,
+            int retryCount,
+            TimeSpan retryDelay,
+            IMviResult fallbackResult,
+            bool isConfigured,
+            MviErrorDecisionTrace trace)
+        {
+            EmitError = emitError;
+            Rethrow = rethrow;
+            RetryCount = retryCount < 0 ? 0 : retryCount;
+            RetryDelay = retryDelay;
+            FallbackResult = fallbackResult;
+            Trace = trace;
+            IsConfigured = isConfigured;
         }
 
         public bool EmitError { get; }
@@ -57,6 +116,8 @@ namespace MVI
         public TimeSpan RetryDelay { get; }
 
         public IMviResult FallbackResult { get; }
+
+        public MviErrorDecisionTrace Trace { get; }
 
         public bool IsConfigured { get; }
 
@@ -78,6 +139,23 @@ namespace MVI
         public static MviErrorDecision Fallback(IMviResult fallbackResult, bool emitError = true)
         {
             return new MviErrorDecision(emitError: emitError, rethrow: false, retryCount: 0, retryDelay: default, fallbackResult: fallbackResult);
+        }
+
+        public MviErrorDecision WithTrace(MviErrorDecisionTrace trace)
+        {
+            if (!trace.IsConfigured)
+            {
+                return this;
+            }
+
+            return new MviErrorDecision(
+                emitError: EmitError,
+                rethrow: Rethrow,
+                retryCount: RetryCount,
+                retryDelay: RetryDelay,
+                fallbackResult: FallbackResult,
+                isConfigured: IsConfigured,
+                trace: trace);
         }
     }
 

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Text;
 using UnityEngine;
 
@@ -64,6 +65,16 @@ namespace MVI
         void Write(string key, byte[] bytes);
 
         void Clear(string key);
+    }
+
+    /// <summary>
+    /// 支持命名空间管理的存储接口。
+    /// </summary>
+    public interface INamespacedStoreStateStorage : IStoreStateStorage
+    {
+        IEnumerable<string> EnumerateKeys(string prefix = null);
+
+        int ClearByPrefix(string prefix);
     }
 
     /// <summary>
@@ -508,7 +519,7 @@ namespace MVI
     /// <summary>
     /// 内存存储后端（用于测试或运行时临时缓存）。
     /// </summary>
-    public sealed class InMemoryStoreStateStorage : IStoreStateStorage
+    public sealed class InMemoryStoreStateStorage : INamespacedStoreStateStorage
     {
         private readonly Dictionary<string, byte[]> _store = new(StringComparer.Ordinal);
 
@@ -550,13 +561,41 @@ namespace MVI
                 _store.Remove(key);
             }
         }
+
+        public IEnumerable<string> EnumerateKeys(string prefix = null)
+        {
+            if (string.IsNullOrWhiteSpace(prefix))
+            {
+                return _store.Keys.ToArray();
+            }
+
+            return _store.Keys.Where(key => key.StartsWith(prefix, StringComparison.Ordinal)).ToArray();
+        }
+
+        public int ClearByPrefix(string prefix)
+        {
+            var keys = EnumerateKeys(prefix).ToArray();
+            for (var i = 0; i < keys.Length; i++)
+            {
+                _store.Remove(keys[i]);
+            }
+
+            return keys.Length;
+        }
     }
 
     /// <summary>
     /// PlayerPrefs 存储后端（将快照写为 Base64 字符串）。
     /// </summary>
-    public sealed class PlayerPrefsStoreStateStorage : IStoreStateStorage
+    public sealed class PlayerPrefsStoreStateStorage : INamespacedStoreStateStorage
     {
+        [Serializable]
+        private sealed class KeyIndexEnvelope
+        {
+            public string[] keys;
+        }
+
+        private const string IndexSuffix = ".__index__";
         private readonly string _keyPrefix;
 
         public PlayerPrefsStoreStateStorage(string keyPrefix = "MVI.STATE")
@@ -601,6 +640,7 @@ namespace MVI
             }
 
             PlayerPrefs.SetString(storageKey, Convert.ToBase64String(bytes));
+            AddKeyToIndex(key);
             PlayerPrefs.Save();
         }
 
@@ -613,7 +653,66 @@ namespace MVI
             }
 
             PlayerPrefs.DeleteKey(storageKey);
+            RemoveKeyFromIndex(key);
             PlayerPrefs.Save();
+        }
+
+        public IEnumerable<string> EnumerateKeys(string prefix = null)
+        {
+            var index = LoadIndex();
+            if (index.Count == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            var result = new List<string>(index.Count);
+            foreach (var key in index)
+            {
+                if (string.IsNullOrWhiteSpace(key))
+                {
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(prefix) && !key.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var storageKey = BuildStorageKey(key);
+                if (!string.IsNullOrWhiteSpace(storageKey) && PlayerPrefs.HasKey(storageKey))
+                {
+                    result.Add(key);
+                }
+            }
+
+            return result;
+        }
+
+        public int ClearByPrefix(string prefix)
+        {
+            var keys = EnumerateKeys(prefix).ToArray();
+            for (var i = 0; i < keys.Length; i++)
+            {
+                var storageKey = BuildStorageKey(keys[i]);
+                if (!string.IsNullOrWhiteSpace(storageKey))
+                {
+                    PlayerPrefs.DeleteKey(storageKey);
+                }
+            }
+
+            if (keys.Length > 0)
+            {
+                var index = LoadIndex();
+                for (var i = 0; i < keys.Length; i++)
+                {
+                    index.Remove(keys[i]);
+                }
+
+                SaveIndex(index);
+                PlayerPrefs.Save();
+            }
+
+            return keys.Length;
         }
 
         private string BuildStorageKey(string key)
@@ -625,12 +724,93 @@ namespace MVI
 
             return $"{_keyPrefix}.{key}";
         }
+
+        private string BuildIndexStorageKey()
+        {
+            return $"{_keyPrefix}{IndexSuffix}";
+        }
+
+        private HashSet<string> LoadIndex()
+        {
+            var indexStorageKey = BuildIndexStorageKey();
+            if (string.IsNullOrWhiteSpace(indexStorageKey) || !PlayerPrefs.HasKey(indexStorageKey))
+            {
+                return new HashSet<string>(StringComparer.Ordinal);
+            }
+
+            var json = PlayerPrefs.GetString(indexStorageKey, string.Empty);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return new HashSet<string>(StringComparer.Ordinal);
+            }
+
+            try
+            {
+                var envelope = JsonUtility.FromJson<KeyIndexEnvelope>(json);
+                if (envelope?.keys == null || envelope.keys.Length == 0)
+                {
+                    return new HashSet<string>(StringComparer.Ordinal);
+                }
+
+                return new HashSet<string>(envelope.keys.Where(key => !string.IsNullOrWhiteSpace(key)), StringComparer.Ordinal);
+            }
+            catch
+            {
+                return new HashSet<string>(StringComparer.Ordinal);
+            }
+        }
+
+        private void SaveIndex(HashSet<string> keys)
+        {
+            var indexStorageKey = BuildIndexStorageKey();
+            if (string.IsNullOrWhiteSpace(indexStorageKey))
+            {
+                return;
+            }
+
+            var normalized = (keys ?? new HashSet<string>(StringComparer.Ordinal))
+                .Where(key => !string.IsNullOrWhiteSpace(key))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(key => key, StringComparer.Ordinal)
+                .ToArray();
+            var envelope = new KeyIndexEnvelope { keys = normalized };
+            var json = JsonUtility.ToJson(envelope);
+            PlayerPrefs.SetString(indexStorageKey, json);
+        }
+
+        private void AddKeyToIndex(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                return;
+            }
+
+            var index = LoadIndex();
+            if (index.Add(key))
+            {
+                SaveIndex(index);
+            }
+        }
+
+        private void RemoveKeyFromIndex(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                return;
+            }
+
+            var index = LoadIndex();
+            if (index.Remove(key))
+            {
+                SaveIndex(index);
+            }
+        }
     }
 
     /// <summary>
     /// 文件存储后端（按 key 落盘为独立文件，支持原子替换写入）。
     /// </summary>
-    public sealed class FileStoreStateStorage : IStoreStateStorage
+    public sealed class FileStoreStateStorage : INamespacedStoreStateStorage
     {
         private readonly string _rootDirectory;
         private readonly string _fileExtension;
@@ -717,6 +897,43 @@ namespace MVI
             }
         }
 
+        public IEnumerable<string> EnumerateKeys(string prefix = null)
+        {
+            if (string.IsNullOrWhiteSpace(_rootDirectory) || !Directory.Exists(_rootDirectory))
+            {
+                return Array.Empty<string>();
+            }
+
+            var result = new List<string>();
+            foreach (var filePath in EnumerateFilePaths())
+            {
+                if (!TryDecodeKeyFromPath(filePath, out var key))
+                {
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(prefix) && !key.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                result.Add(key);
+            }
+
+            return result;
+        }
+
+        public int ClearByPrefix(string prefix)
+        {
+            var keys = EnumerateKeys(prefix).ToArray();
+            for (var i = 0; i < keys.Length; i++)
+            {
+                Clear(keys[i]);
+            }
+
+            return keys.Length;
+        }
+
         private string BuildFilePath(string key)
         {
             if (string.IsNullOrWhiteSpace(key))
@@ -724,7 +941,7 @@ namespace MVI
                 return null;
             }
 
-            var fileName = BuildSafeFileName(key);
+            var fileName = EncodeKeyForFileName(key);
             if (string.IsNullOrWhiteSpace(fileName))
             {
                 return null;
@@ -733,51 +950,69 @@ namespace MVI
             return Path.Combine(_rootDirectory, fileName + _fileExtension);
         }
 
-        private static string BuildSafeFileName(string key)
+        private IEnumerable<string> EnumerateFilePaths()
         {
-            var invalidChars = Path.GetInvalidFileNameChars();
-            var safeChars = new char[key.Length];
-            for (var i = 0; i < key.Length; i++)
-            {
-                var ch = key[i];
-                var isInvalid = false;
-                for (var j = 0; j < invalidChars.Length; j++)
-                {
-                    if (invalidChars[j] != ch)
-                    {
-                        continue;
-                    }
-
-                    isInvalid = true;
-                    break;
-                }
-
-                safeChars[i] = isInvalid ? '_' : ch;
-            }
-
-            var safe = new string(safeChars).Trim();
-            if (safe.Length <= 96)
-            {
-                return safe;
-            }
-
-            return safe.Substring(0, 96) + "_" + ComputeStableHashHex(key);
+            return Directory.EnumerateFiles(_rootDirectory, "*" + _fileExtension, SearchOption.TopDirectoryOnly);
         }
 
-        private static string ComputeStableHashHex(string text)
+        private bool TryDecodeKeyFromPath(string filePath, out string key)
         {
-            unchecked
+            key = null;
+            if (string.IsNullOrWhiteSpace(filePath))
             {
-                const uint offset = 2166136261u;
-                const uint prime = 16777619u;
-                var hash = offset;
-                for (var i = 0; i < text.Length; i++)
+                return false;
+            }
+
+            var fileName = Path.GetFileNameWithoutExtension(filePath);
+            if (string.IsNullOrWhiteSpace(fileName))
+            {
+                return false;
+            }
+
+            return TryDecodeKeyFromFileName(fileName, out key);
+        }
+
+        private static string EncodeKeyForFileName(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                return string.Empty;
+            }
+
+            var bytes = Encoding.UTF8.GetBytes(key);
+            var base64 = Convert.ToBase64String(bytes);
+            return base64
+                .Replace('+', '-')
+                .Replace('/', '_')
+                .TrimEnd('=');
+        }
+
+        private static bool TryDecodeKeyFromFileName(string fileName, out string key)
+        {
+            key = null;
+            if (string.IsNullOrWhiteSpace(fileName))
+            {
+                return false;
+            }
+
+            try
+            {
+                var normalized = fileName
+                    .Replace('-', '+')
+                    .Replace('_', '/');
+                var padding = normalized.Length % 4;
+                if (padding > 0)
                 {
-                    hash ^= text[i];
-                    hash *= prime;
+                    normalized = normalized.PadRight(normalized.Length + (4 - padding), '=');
                 }
 
-                return hash.ToString("X8");
+                var bytes = Convert.FromBase64String(normalized);
+                key = Encoding.UTF8.GetString(bytes);
+                return !string.IsNullOrWhiteSpace(key);
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -909,6 +1144,21 @@ namespace MVI
     /// </summary>
     public static class StoreStatePersistenceFactory
     {
+        public static string CreateNamespacedKey(string keyNamespace, string key)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                return string.Empty;
+            }
+
+            if (string.IsNullOrWhiteSpace(keyNamespace))
+            {
+                return key;
+            }
+
+            return $"{keyNamespace.Trim()}.{key}";
+        }
+
         public static IStoreStatePersistence CreateJsonPersistence(
             IStoreStateStorage storage,
             int schemaVersion = 1,

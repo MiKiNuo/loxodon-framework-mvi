@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,12 +15,17 @@ namespace MVI
         private readonly Subject<IntentEnvelope> _intentSubject = new();
         private readonly Subject<IMviEffect> _effectSubject = new();
         private readonly Subject<MviErrorEffect> _errorSubject = new();
+        private static readonly Type[] LegacyErrorHandlerSignature = { typeof(Exception) };
+        private static readonly Type[] DecisionErrorHandlerSignature = { typeof(Exception), typeof(MviErrorDecision) };
         private readonly CompositeDisposable _disposables = new();
         private readonly CancellationTokenSource _storeCts = new();
         private readonly List<IStoreMiddleware> _middlewares = new();
         private readonly Dictionary<Type, IntentProcessingPolicy> _intentPolicies = new();
         private readonly List<IState> _stateHistory = new();
         private readonly object _middlewareSyncRoot = new();
+        private readonly bool _hasLegacyErrorHandlerOverride;
+        private readonly bool _hasDecisionErrorHandlerOverride;
+        private long _middlewareCorrelationSequence;
         private IState _currentState;
         private int _stateHistoryIndex = -1;
         private bool _isDisposed;
@@ -62,8 +68,12 @@ namespace MVI
         protected Store()
         {
             State = _stateSubject.ToReadOnlyReactiveProperty();
+            DetectErrorHandlerOverrides(out _hasLegacyErrorHandlerOverride, out _hasDecisionErrorHandlerOverride);
+            ApplyProfileDefaults();
             ConfigureMiddlewares(_middlewares);
+            ApplyProfileMiddlewares();
             ConfigureIntentProcessingPolicies(_intentPolicies);
+            ApplyProfileIntentPolicies();
             if (!TryRestorePersistedState())
             {
                 InitializeState();
@@ -72,14 +82,17 @@ namespace MVI
             Process(_intentSubject);
         }
 
+        // Store 统一配置（默认读取全局 Profile，可由子类覆写）。
+        protected virtual StoreProfile Profile => MviStoreOptions.DefaultProfile;
+
         // Intent 并发策略（默认 Switch: 取消上一个意图）。
-        protected virtual AwaitOperation ProcessingMode => AwaitOperation.Switch;
+        protected virtual AwaitOperation ProcessingMode => Profile?.ProcessingMode ?? AwaitOperation.Switch;
 
         // 并发上限（仅对 Parallel/SequentialParallel 生效，-1 为不限制）。
-        protected virtual int MaxConcurrent => -1;
+        protected virtual int MaxConcurrent => Profile?.MaxConcurrent ?? -1;
 
         // 状态历史容量（<=0 表示关闭历史）。
-        protected virtual int StateHistoryCapacity => 64;
+        protected virtual int StateHistoryCapacity => Profile?.StateHistoryCapacity ?? 64;
 
         // 配置 Store 级中间件（可覆写）。
         protected virtual void ConfigureMiddlewares(IList<IStoreMiddleware> middlewares)
@@ -92,10 +105,10 @@ namespace MVI
         }
 
         // 当前 Store 的状态持久化插件（默认使用全局选项）。
-        protected virtual IStoreStatePersistence Persistence => MviStoreOptions.DefaultStatePersistence;
+        protected virtual IStoreStatePersistence Persistence => Profile?.StatePersistence ?? MviStoreOptions.DefaultStatePersistence;
 
         // 当前 Store 的错误处理策略（默认发出 Error/Effect）。
-        protected virtual IMviErrorStrategy ErrorStrategy => MviStoreOptions.DefaultErrorStrategy ?? DefaultMviErrorStrategy.Instance;
+        protected virtual IMviErrorStrategy ErrorStrategy => Profile?.ErrorStrategy ?? MviStoreOptions.DefaultErrorStrategy ?? DefaultMviErrorStrategy.Instance;
 
         // 持久化键（默认使用完整类型名）。
         protected virtual string PersistenceKey => GetType().FullName;
@@ -104,6 +117,67 @@ namespace MVI
         protected virtual IState MigratePersistedState(IState persistedState)
         {
             return persistedState;
+        }
+
+        private void ApplyProfileDefaults()
+        {
+            var profile = Profile;
+            if (profile == null)
+            {
+                return;
+            }
+
+            if (profile.DevToolsEnabled.HasValue)
+            {
+                MviDevTools.Enabled = profile.DevToolsEnabled.Value;
+            }
+
+            if (profile.DevToolsMaxEventsPerStore.HasValue)
+            {
+                MviDevTools.MaxEventsPerStore = Math.Max(1, profile.DevToolsMaxEventsPerStore.Value);
+            }
+
+            if (profile.DevToolsSamplingOptions != null)
+            {
+                MviDevTools.SamplingOptions = profile.DevToolsSamplingOptions;
+            }
+        }
+
+        private void ApplyProfileMiddlewares()
+        {
+            var profile = Profile;
+            if (profile?.Middlewares == null || profile.Middlewares.Count == 0)
+            {
+                return;
+            }
+
+            for (var i = 0; i < profile.Middlewares.Count; i++)
+            {
+                var middleware = profile.Middlewares[i];
+                if (middleware != null)
+                {
+                    _middlewares.Add(middleware);
+                }
+            }
+        }
+
+        private void ApplyProfileIntentPolicies()
+        {
+            var profile = Profile;
+            if (profile?.IntentPolicies == null || profile.IntentPolicies.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var pair in profile.IntentPolicies)
+            {
+                if (pair.Key == null)
+                {
+                    continue;
+                }
+
+                _intentPolicies[pair.Key] = pair.Value;
+            }
         }
 
         // 运行时注册中间件。
@@ -382,6 +456,23 @@ namespace MVI
 
         protected virtual void OnProcessError(Exception ex)
         {
+            PublishProcessError(ex, default);
+        }
+
+        protected virtual void OnProcessError(Exception ex, MviErrorDecision decision)
+        {
+            // 兼容旧扩展点：若业务仅覆写旧签名，则优先回退到旧钩子。
+            if (_hasLegacyErrorHandlerOverride && !_hasDecisionErrorHandlerOverride)
+            {
+                OnProcessError(ex);
+                return;
+            }
+
+            PublishProcessError(ex, decision);
+        }
+
+        private void PublishProcessError(Exception ex, MviErrorDecision decision)
+        {
             if (ex == null)
             {
                 return;
@@ -389,12 +480,67 @@ namespace MVI
 
             var error = new MviErrorEffect(ex, GetType().Name);
             _errorSubject.OnNext(error);
-            MviDevTools.Track(this, MviTimelineEventKind.Error, error, ex.Message);
+            var traceNote = BuildErrorTraceNote(ex, decision);
+            MviDevTools.Track(this, MviTimelineEventKind.Error, error, traceNote);
             EmitEffect(error);
             if (MviDiagnostics.Enabled)
             {
-                MviDiagnostics.Trace($"[Store:{GetType().Name}] Error: {ex}");
+                MviDiagnostics.Trace($"[Store:{GetType().Name}] Error: {traceNote} | {ex}");
             }
+        }
+
+        private void DetectErrorHandlerOverrides(out bool legacyOverride, out bool decisionOverride)
+        {
+            var runtimeType = GetType();
+            var legacyMethod = runtimeType.GetMethod(
+                nameof(OnProcessError),
+                BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public,
+                binder: null,
+                types: LegacyErrorHandlerSignature,
+                modifiers: null);
+            var decisionMethod = runtimeType.GetMethod(
+                nameof(OnProcessError),
+                BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public,
+                binder: null,
+                types: DecisionErrorHandlerSignature,
+                modifiers: null);
+
+            legacyOverride = legacyMethod != null && legacyMethod.DeclaringType != typeof(Store);
+            decisionOverride = decisionMethod != null && decisionMethod.DeclaringType != typeof(Store);
+        }
+
+        private static string BuildErrorTraceNote(Exception ex, MviErrorDecision decision)
+        {
+            if (!decision.Trace.IsConfigured)
+            {
+                return ex?.Message ?? string.Empty;
+            }
+
+            return $"rule={decision.Trace.RuleId},priority={decision.Trace.Priority},phase={decision.Trace.Phase},attempt={decision.Trace.Attempt},matched={decision.Trace.IsMatched},note={decision.Trace.Note}";
+        }
+
+        private void TrackMiddlewareTrace(
+            string correlationId,
+            int attempt,
+            StoreMiddlewareStage stage,
+            IStoreMiddleware middleware = null,
+            string message = null,
+            Exception exception = null)
+        {
+            if (string.IsNullOrWhiteSpace(correlationId))
+            {
+                return;
+            }
+
+            var trace = new MviMiddlewareTraceEvent(
+                correlationId: correlationId,
+                attempt: attempt,
+                stage: stage,
+                middlewareType: middleware?.GetType().Name,
+                message: message,
+                exceptionType: exception?.GetType().Name,
+                exceptionMessage: exception?.Message);
+            MviDevTools.Track(this, MviTimelineEventKind.Middleware, trace, message);
         }
 
         protected void SetInitialState(IState state)
@@ -429,7 +575,7 @@ namespace MVI
                 cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
-                    var result = await InvokeMiddlewarePipelineAsync(intent, cancellationToken);
+                    var result = await InvokeMiddlewarePipelineAsync(intent, cancellationToken, attempt);
                     if (result != null)
                     {
                         MviDevTools.Track(this, MviTimelineEventKind.Result, result);
@@ -446,7 +592,7 @@ namespace MVI
                     var decision = await ResolveErrorDecisionAsync(ex, intent, attempt, phase, cancellationToken);
                     if (decision.EmitError)
                     {
-                        OnProcessError(ex);
+                        OnProcessError(ex, decision);
                     }
 
                     if (decision.FallbackResult != null)
@@ -476,50 +622,120 @@ namespace MVI
             }
         }
 
-        private ValueTask<IMviResult> InvokeMiddlewarePipelineAsync(IIntent intent, CancellationToken cancellationToken)
+        private async ValueTask<IMviResult> InvokeMiddlewarePipelineAsync(IIntent intent, CancellationToken cancellationToken, int attempt)
         {
             if (intent == null)
             {
                 return default;
             }
 
-            IStoreMiddleware[] middlewares;
+            IStoreMiddleware[] middlewares = null;
+            var hasMiddlewares = false;
             lock (_middlewareSyncRoot)
             {
-                if (_middlewares.Count == 0)
+                if (_middlewares.Count > 0)
                 {
-                    return ProcessIntentAsync(intent, cancellationToken);
+                    hasMiddlewares = true;
+                    middlewares = _middlewares.ToArray();
                 }
-
-                middlewares = _middlewares.ToArray();
             }
 
-            var context = new StoreMiddlewareContext(this, intent, cancellationToken);
-            var index = -1;
-
-            ValueTask<IMviResult> Next(StoreMiddlewareContext current)
+            if (!hasMiddlewares)
             {
-                index++;
-                if (index >= middlewares.Length)
+                return await ProcessIntentAsync(intent, cancellationToken);
+            }
+
+            var correlationId = $"{GetType().Name}:{Interlocked.Increment(ref _middlewareCorrelationSequence)}";
+            var context = StoreMiddlewareContextPool.Rent(this, intent, cancellationToken, attempt, correlationId);
+
+            try
+            {
+                context.Stage = StoreMiddlewareStage.BeforeIntent;
+                TrackMiddlewareTrace(correlationId, attempt, context.Stage, message: "pipeline-start");
+                for (var i = 0; i < middlewares.Length; i++)
                 {
-                    if (current.Intent == null)
+                    if (middlewares[i] is IStoreMiddlewareV2 middlewareV2)
                     {
-                        return default;
+                        TrackMiddlewareTrace(correlationId, attempt, context.Stage, middlewares[i], "before-hook");
+                        await middlewareV2.OnBeforeIntentAsync(context);
+                    }
+                }
+
+                var index = -1;
+                context.Stage = StoreMiddlewareStage.InvokeCore;
+                TrackMiddlewareTrace(correlationId, attempt, context.Stage, message: "core-start");
+
+                ValueTask<IMviResult> Next(StoreMiddlewareContext current)
+                {
+                    index++;
+                    if (index >= middlewares.Length)
+                    {
+                        if (current.Intent == null)
+                        {
+                            return default;
+                        }
+
+                        return ProcessIntentAsync(current.Intent, current.CancellationToken);
                     }
 
-                    return ProcessIntentAsync(current.Intent, current.CancellationToken);
+                    var middleware = middlewares[index];
+                    if (middleware == null)
+                    {
+                        return Next(current);
+                    }
+
+                    return middleware.InvokeAsync(current, Next);
                 }
 
-                var middleware = middlewares[index];
-                if (middleware == null)
+                var result = await Next(context);
+                TrackMiddlewareTrace(correlationId, attempt, context.Stage, message: "core-complete");
+
+                context.Stage = StoreMiddlewareStage.AfterResult;
+                for (var i = 0; i < middlewares.Length; i++)
                 {
-                    return Next(current);
+                    if (middlewares[i] is IStoreMiddlewareV2 middlewareV2)
+                    {
+                        TrackMiddlewareTrace(correlationId, attempt, context.Stage, middlewares[i], "after-hook");
+                        await middlewareV2.OnAfterResultAsync(context, result);
+                    }
                 }
 
-                return middleware.InvokeAsync(current, Next);
-            }
+                TrackMiddlewareTrace(correlationId, attempt, context.Stage, message: "pipeline-complete");
 
-            return Next(context);
+                return result;
+            }
+            catch (Exception ex)
+            {
+                context.Stage = StoreMiddlewareStage.OnError;
+                TrackMiddlewareTrace(correlationId, attempt, context.Stage, message: "pipeline-error", exception: ex);
+                for (var i = 0; i < middlewares.Length; i++)
+                {
+                    if (middlewares[i] is not IStoreMiddlewareV2 middlewareV2)
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        TrackMiddlewareTrace(correlationId, attempt, context.Stage, middlewares[i], "error-hook", ex);
+                        await middlewareV2.OnErrorAsync(context, ex);
+                    }
+                    catch (Exception hookException)
+                    {
+                        TrackMiddlewareTrace(correlationId, attempt, context.Stage, middlewares[i], "error-hook-failed", hookException);
+                        if (MviDiagnostics.Enabled)
+                        {
+                            MviDiagnostics.Trace($"[Store:{GetType().Name}] Middleware OnError hook failed: {hookException}");
+                        }
+                    }
+                }
+
+                throw;
+            }
+            finally
+            {
+                StoreMiddlewareContextPool.Return(context);
+            }
         }
 
         private void ApplyStateInternal(IState state, bool trackHistory, bool persistState, MviTimelineEventKind timelineKind, string timelineNote = null)
@@ -655,7 +871,7 @@ namespace MVI
             var decision = ResolveErrorDecision(ex, null, 0, phase);
             if (decision.EmitError)
             {
-                OnProcessError(ex);
+                OnProcessError(ex, decision);
             }
 
             if (decision.Rethrow)
