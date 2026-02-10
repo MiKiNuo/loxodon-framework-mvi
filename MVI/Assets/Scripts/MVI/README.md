@@ -17,7 +17,9 @@
 - MVI 核心运行时：`Core/`
 - Loxodon 集成与 UGUI 适配：`Loxodon/`
 - FairyGUI 集成与适配：`FairyGUI/`
+- FairyGUI 第三方源码（运行时与编辑器）：`ThirdParty/FairyGUI/`
 - 编辑器工具（DevTools 窗口）：`Editor/`
+- 源生成器分析器（用于 `MviMap` / `MviIgnore` 映射优化）：`Analyzers/SourceGenerator.dll`
 
 ## 包内不包含内容
 
@@ -30,5 +32,5 @@
 - 本包默认你已在项目中安装相关依赖，例如：
   - `R3.Unity`
   - `Loxodon.Framework`
-  - `FairyGUI`（仅在使用 FairyGUI 集成时需要）
+- `FairyGUI` 已内置在本包中，无需额外安装。
 - 更完整的架构与示例说明，请查看仓库根目录 `README.md`。
