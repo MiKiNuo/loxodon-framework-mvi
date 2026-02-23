@@ -86,25 +86,15 @@ ComposedWindowBase : Window
 2. 组合式基类：`MVI/Assets/Scripts/MVI/Loxodon/Composed`
 3. 示例组件：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/Components`
 
-**新扩展架构（UI 适配层）**
-1. 组合核心：`MVI/Assets/Scripts/MVI/Core/Composition`
-2. UGUI 适配器：`MVI/Assets/Scripts/MVI/Loxodon/UIAdapters/UguiViewHost.cs`
-3. FairyGUI 适配器：`MVI/Assets/Scripts/MVI/FairyGUI/UIAdapters/FairyViewHost.cs`
-4. 组合页面基类（UGUI/FairyGUI）已统一复用同一套组合运行时（组件注册、Props diff、事件路由、清理）。
-
 ## Demo使用方法
 **入口场景**
 1. 打开 `MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Launcher.unity`
 2. 运行即可
 
 **UGUI / FairyGUI 切换**
-在 `Launcher` 组件上设置：
+在 `Launcher` 上设置：
 1. `demoUiKind = UGUI`：运行 UGUI 组合式 Demo
 2. `demoUiKind = FairyGUI`：运行 FairyGUI 组合式 Demo
-
-可选开关：
-1. `enableRuntimeToggle` + `toggleKey`：运行时按键切换
-2. `usePlayerPrefsOverride`：通过 `PlayerPrefs` 覆盖默认值
 
 **UGUI Demo 位置**
 1. 组合式 Demo 入口：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/Composed/Views/ComposedDashboardWindow.cs`
@@ -117,64 +107,5 @@ ComposedWindowBase : Window
 3. 计数器 Demo：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/Counter/Views/FairyCounterView.cs`
 4. FairyGUI 自动生成代码：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/ComposedDashboardWindow`
 
-**FairyGUI 初始化（必需）**
-```
-BindingServiceBundle bundle = new BindingServiceBundle(context.GetContainer());
-bundle.Start();
-FairyGUIBindingServiceBundle fairyBundle = new FairyGUIBindingServiceBundle(context.GetContainer());
-fairyBundle.Start();
-```
 
-**FairyGUI 资源加载（Editor）**
-```
-UIPackage.AddPackage("Assets/Res/ComposedDashboardWindow");
-ComposedDashboardWindowBinder.BindAll();
-```
 
-## 业务侧接入示例（中间件/错误策略/DevTools）
-**示例代码位置**
-1. 集成安装器：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/MviIntegration/MviBusinessIntegrationInstaller.cs`
-2. 业务中间件：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/MviIntegration/LoginIntentAuditMiddleware.cs`
-3. 接入入口：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Launcher.cs`
-4. Store 挂中间件示例：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/Logins/ViewModels/LoginViewModel.cs`
-
-**入口开关（Launcher Inspector）**
-1. `enableMviDiagnostics`：开启 `MviDiagnostics` 链路日志
-2. `enableMviDevTools` + `mviDevToolsMaxEvents`：开启 DevTools 时间线并设置容量
-3. `enableBusinessErrorStrategy` + `businessErrorRetryCount` + `businessErrorRetryDelayMs`：开启全局错误策略与重试参数
-4. `enableLoginAuditMiddleware`：是否给 `LoginStore` 注入登录审计中间件
-5. `autoDumpLoginStoreTimeline`：登录完成后自动打印时间线快照
-6. `enableBuiltinLoginMiddlewares`：是否启用内置中间件链（日志/防抖/超时）
-7. `enableLoginLoggingMiddleware`：是否启用 `LoggingStoreMiddleware`
-8. `loginDebounceMs`：登录意图防抖窗口（毫秒）
-9. `loginTimeoutMs`：登录意图超时阈值（毫秒）
-10. `enableLoginMetricsMiddleware`：是否启用登录链路指标中间件
-11. `autoDumpLoginMiddlewareMetrics`：登录完成后自动打印中间件指标快照
-
-**业务接入要点**
-1. 在入口统一安装：`MviBusinessIntegrationInstaller.Install(...)`
-2. 在具体业务 Store 创建处调用 `store.UseMiddleware(new LoginIntentAuditMiddleware())`
-3. 通过 `BusinessMviIntegrationRuntime.DumpTimeline(store, tag)` 输出时间线
-4. 全局错误策略走 `IMviErrorStrategy`，可按阶段返回 `Retry/Ignore/Emit/Fallback`
-5. 内置中间件示例在 `LoginViewModel.ConfigureStoreMiddlewares`：`LoggingStoreMiddleware` + `DebounceIntentMiddleware` + `TimeoutIntentMiddleware`
-6. 指标中间件示例：`MetricsStoreMiddleware` + `StoreMiddlewareMetricsCollector`
-
-## 扩展能力
-1. 泛型 Store / MviResult：`Store<TState, TIntent, TResult>` / `MviResult<T>`
-2. Effects 与错误通道：`Store.Effects` / `Store.Errors`
-3. Intent 并发与取消：`ProcessingMode` / `EmitIntent(intent, cancellationToken)`
-4. 映射规则：`[MviIgnore]` / `[MviMap("OtherName")]`
-5. 诊断：`MviDiagnostics`
-
-## 组合式页面布局（FairyGUI）
-布局策略目录：`MVI/Assets/Samples/Loxodon Framework/2.0.0/Examples/Scripts/Views/UI/FairyGUI/Composed/Layouts`
-
-内置策略：
-1. `VerticalCenter`
-2. `LeftRightSplit`
-3. `VariableSpacingVertical`
-4. `Grid`
-5. `AbsolutePosition`
-6. `PlaceholderAlign`
-
-`FairyComposedDashboardView` 支持 `layoutKind` 切换策略，并提供 `SwitchLayout` / `RebuildLayout` 运行时接口。
