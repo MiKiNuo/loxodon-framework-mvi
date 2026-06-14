@@ -177,4 +177,15 @@ namespace MVI
             return new ValueTask<MviErrorDecision>(MviErrorDecision.Emit());
         }
     }
+
+    /// <summary>
+    /// Store 错误钩子路由模式：业务可显式选择调用 OnProcessError 的哪个重载，避免反射探测子类覆写。
+    /// </summary>
+    public enum MviErrorHookMode
+    {
+        /// <summary>默认：调用 OnProcessError(Exception, MviErrorDecision)。</summary>
+        Decision = 0,
+        /// <summary>旧版兼容：仅调用 OnProcessError(Exception)。</summary>
+        Legacy = 1
+    }
 }

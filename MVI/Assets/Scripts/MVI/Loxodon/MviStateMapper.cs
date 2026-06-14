@@ -1,15 +1,22 @@
 using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
 
 namespace MVI
 {
+    /// <summary>
+    /// State → ViewModel 映射器：优先使用源生成器生成的映射函数，缺失时返回 false。
+    /// 不再提供反射回退实现，源生成器需保证所有 MVI 场景都有匹配的映射代码。
+    /// </summary>
     internal static class MviStateMapper
     {
+        // 由源生成器在编译期注入：MVI.Generated.GeneratedStateMapper.TryMap(state, viewModel)。
+        // 若源生成器未启用或未覆盖目标类型，GeneratedMapper 为 null，TryMap 直接返回 false。
         private static readonly Func<IState, MviViewModel, bool> GeneratedMapper = FindGeneratedMapper();
-        private static readonly ConcurrentDictionary<(Type StateType, Type ViewModelType), PropertyPair[]> PairCache = new();
+
+        // 已注册的源生成器映射函数（同进程内允许热替换，例如 Editor 重载）。
+        private static readonly ConcurrentDictionary<string, Func<IState, MviViewModel, bool>> RegisteredMappers =
+            new(StringComparer.Ordinal);
 
         public static bool TryMap(IState state, MviViewModel viewModel)
         {
@@ -18,12 +25,21 @@ namespace MVI
                 return false;
             }
 
-            if (GeneratedMapper != null && GeneratedMapper(state, viewModel))
+            var mapper = GeneratedMapper;
+            return mapper != null && mapper(state, viewModel);
+        }
+
+        /// <summary>
+        /// 由源生成器在模块初始化时调用，避免运行时反射扫描所有程序集。
+        /// </summary>
+        public static void RegisterMapper(Func<IState, MviViewModel, bool> mapper)
+        {
+            if (mapper == null)
             {
-                return true;
+                return;
             }
 
-            return ReflectionMap(state, viewModel);
+            RegisteredMappers[mapper.Method.DeclaringType?.FullName ?? mapper.Method.Name] = mapper;
         }
 
         private static Func<IState, MviViewModel, bool> FindGeneratedMapper()
@@ -31,181 +47,38 @@ namespace MVI
             const string mapperTypeName = "MVI.Generated.GeneratedStateMapper";
             const string methodName = "TryMap";
 
-            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+            // 优先查找已注册的映射函数（源生成器通过 RegisterMapper 注入，避免 AppDomain 反射扫描）。
+            foreach (var pair in RegisteredMappers)
             {
-                Type type;
-                try
+                if (pair.Value != null)
                 {
-                    type = assembly.GetType(mapperTypeName, false);
+                    return pair.Value;
                 }
-                catch
-                {
-                    continue;
-                }
+            }
 
-                if (type == null)
-                {
-                    continue;
-                }
-
-                var method = type.GetMethod(methodName, BindingFlags.Public | BindingFlags.Static);
-                if (method == null)
-                {
-                    continue;
-                }
-
-                try
-                {
-                    return (Func<IState, MviViewModel, bool>)Delegate.CreateDelegate(
-                        typeof(Func<IState, MviViewModel, bool>), method);
-                }
-                catch
+            // 兜底：通过反射仅在 MVI.Generated 程序集内定位源生成器产物。
+            // 这是为了兼容老版本源生成器（未调用 RegisterMapper），新源生成器应直接走 RegisterMapper 路径。
+            try
+            {
+                var generatedType = Type.GetType($"{mapperTypeName}, MVI.Generated");
+                if (generatedType == null)
                 {
                     return null;
                 }
+
+                var method = generatedType.GetMethod(methodName, BindingFlags.Public | BindingFlags.Static);
+                if (method == null)
+                {
+                    return null;
+                }
+
+                return (Func<IState, MviViewModel, bool>)Delegate.CreateDelegate(
+                    typeof(Func<IState, MviViewModel, bool>), method);
             }
-
-            return null;
-        }
-
-        private static bool ReflectionMap(IState state, MviViewModel viewModel)
-        {
-            var pairs = PairCache.GetOrAdd((state.GetType(), viewModel.GetType()), key => BuildPairs(key.StateType, key.ViewModelType));
-            if (pairs.Length == 0)
+            catch
             {
-                return false;
+                return null;
             }
-
-            var onlyIfChanged = !state.IsUpdateNewState;
-            foreach (var pair in pairs)
-            {
-                var newValue = pair.StateProperty.GetValue(state);
-                if (newValue == null && pair.ViewModelProperty.PropertyType.IsValueType && Nullable.GetUnderlyingType(pair.ViewModelProperty.PropertyType) == null)
-                {
-                    continue;
-                }
-
-                if (onlyIfChanged)
-                {
-                    var currentValue = pair.ViewModelProperty.GetValue(viewModel);
-                    if (Equals(currentValue, newValue))
-                    {
-                        continue;
-                    }
-                }
-
-                pair.ViewModelProperty.SetValue(viewModel, newValue);
-            }
-
-            return true;
-        }
-
-        private static PropertyPair[] BuildPairs(Type stateType, Type viewModelType)
-        {
-            var stateProps = GetStateProperties(stateType);
-            var viewModelProps = GetViewModelProperties(viewModelType);
-            var pairs = new List<PropertyPair>();
-
-            foreach (var kvp in stateProps)
-            {
-                if (!viewModelProps.TryGetValue(kvp.Key, out var vmProp))
-                {
-                    continue;
-                }
-
-                if (!vmProp.PropertyType.IsAssignableFrom(kvp.Value.PropertyType))
-                {
-                    continue;
-                }
-
-                pairs.Add(new PropertyPair(kvp.Value, vmProp));
-            }
-
-            return pairs.ToArray();
-        }
-
-        private static Dictionary<string, PropertyInfo> GetStateProperties(Type stateType)
-        {
-            var props = new Dictionary<string, PropertyInfo>(StringComparer.OrdinalIgnoreCase);
-            foreach (var property in GetAllPublicInstanceProperties(stateType))
-            {
-                if (property.Name == "IsUpdateNewState")
-                {
-                    continue;
-                }
-
-                if (HasIgnore(property))
-                {
-                    continue;
-                }
-
-                var name = GetMappedName(property) ?? property.Name;
-                if (!props.ContainsKey(name))
-                {
-                    props.Add(name, property);
-                }
-            }
-
-            return props;
-        }
-
-        private static Dictionary<string, PropertyInfo> GetViewModelProperties(Type viewModelType)
-        {
-            var props = new Dictionary<string, PropertyInfo>(StringComparer.OrdinalIgnoreCase);
-            foreach (var property in GetAllPublicInstanceProperties(viewModelType))
-            {
-                if (!property.CanWrite || property.SetMethod == null || !property.SetMethod.IsPublic)
-                {
-                    continue;
-                }
-
-                if (HasIgnore(property))
-                {
-                    continue;
-                }
-
-                if (!props.ContainsKey(property.Name))
-                {
-                    props.Add(property.Name, property);
-                }
-
-                var alias = GetMappedName(property);
-                if (!string.IsNullOrWhiteSpace(alias) && !props.ContainsKey(alias))
-                {
-                    props.Add(alias, property);
-                }
-            }
-
-            return props;
-        }
-
-        private static IEnumerable<PropertyInfo> GetAllPublicInstanceProperties(Type type)
-        {
-            const BindingFlags flags = BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
-            return type.GetProperties(flags).Where(p => p.GetIndexParameters().Length == 0);
-        }
-
-        private static bool HasIgnore(PropertyInfo property)
-        {
-            return property.GetCustomAttributes(typeof(MviIgnoreAttribute), true).Length > 0;
-        }
-
-        private static string GetMappedName(PropertyInfo property)
-        {
-            var attribute = property.GetCustomAttributes(typeof(MviMapAttribute), true).FirstOrDefault() as MviMapAttribute;
-            return attribute?.Name;
-        }
-
-        private readonly struct PropertyPair
-        {
-            public PropertyPair(PropertyInfo stateProperty, PropertyInfo viewModelProperty)
-            {
-                StateProperty = stateProperty;
-                ViewModelProperty = viewModelProperty;
-            }
-
-            public PropertyInfo StateProperty { get; }
-            public PropertyInfo ViewModelProperty { get; }
         }
     }
 }

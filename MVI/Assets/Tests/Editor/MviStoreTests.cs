@@ -1680,10 +1680,171 @@ namespace MVI.Tests
             }
         }
 
+        [Test]
+        public void StateTypeRegistry_ShouldResolveByQualifiedNameAndSimpleName()
+        {
+            var registry = new StateTypeRegistry();
+            registry.Register(typeof(MapState));
+
+            Assert.IsTrue(registry.TryResolve(typeof(MapState).AssemblyQualifiedName, out var byQualified));
+            Assert.AreEqual(typeof(MapState), byQualified);
+
+            Assert.IsTrue(registry.TryResolve(typeof(MapState).FullName, out var bySimple));
+            Assert.AreEqual(typeof(MapState), bySimple);
+
+            Assert.IsFalse(registry.TryResolve("MVI.Tests.MviStoreTests+NonExistent", out _));
+            Assert.AreEqual(1, registry.Count);
+        }
+
+        [Test]
+        public void StateTypeRegistry_RegisteringNullOrAnonymous_ShouldThrow()
+        {
+            var registry = new StateTypeRegistry();
+            Assert.Throws<ArgumentNullException>(() => registry.Register(null));
+        }
+
+        [Test]
+        public void StateHistoryStore_ShouldRespectCapacityAndCursor()
+        {
+            var history = new StateHistoryStore { Capacity = 2 };
+            var s1 = new TestState { Value = 1 };
+            var s2 = new TestState { Value = 2 };
+            var s3 = new TestState { Value = 3 };
+
+            history.Record(s1);
+            history.Record(s2);
+            history.Record(s3);
+
+            Assert.AreEqual(2, history.Count);
+            Assert.AreEqual(1, history.CurrentIndex);
+            Assert.IsTrue(history.TryGetAt(0, out var older));
+            Assert.AreSame(s2, older);
+        }
+
+        [Test]
+        public void StateHistoryStore_UndoRedo_ShouldMoveCursor()
+        {
+            var history = new StateHistoryStore { Capacity = 4 };
+            var s1 = new TestState { Value = 1 };
+            var s2 = new TestState { Value = 2 };
+            history.Record(s1);
+            history.Record(s2);
+
+            Assert.IsTrue(history.Undo(out var undone));
+            Assert.AreSame(s1, undone);
+            Assert.IsTrue(history.Redo(out var redone));
+            Assert.AreSame(s2, redone);
+        }
+
+        [Test]
+        public void StateHistoryStore_CapacityZero_ShouldDisableHistory()
+        {
+            var history = new StateHistoryStore { Capacity = 0 };
+            history.Record(new TestState { Value = 1 });
+            Assert.AreEqual(0, history.Count);
+            Assert.IsFalse(history.Undo(out _));
+        }
+
+        [Test]
+        public void StorePersistenceCoordinator_ShouldRestoreAndSaveRoundTrip()
+        {
+            // 使用自定义 key 和 persistence 验证协作器与 Store 解耦后仍能正确工作。
+            var storage = new InMemoryStoreStateStorage();
+            var persistence = new SerializedStoreStatePersistence(
+                storage,
+                new IStoreStateSerializer[] { new JsonStoreStateSerializer() },
+                defaultSerializerId: "json");
+
+            var sample = new SerializableState { value = 9, isUpdateNewState = true };
+            persistence.Save("coordinator.test", sample);
+
+            Exception captured = null;
+            MviErrorPhase capturedPhase = MviErrorPhase.IntentProcessing;
+            var coordinator = new StorePersistenceCoordinator(
+                persistenceProvider: () => persistence,
+                keyProvider: () => "coordinator.test",
+                migrator: state => state,
+                errorHandler: (ex, phase) =>
+                {
+                    captured = ex;
+                    capturedPhase = phase;
+                });
+
+            Assert.IsTrue(coordinator.TryRestore(out var restored));
+            Assert.IsInstanceOf<SerializableState>(restored);
+            Assert.AreEqual(9, ((SerializableState)restored).value);
+
+            coordinator.Save(sample);
+            Assert.IsNull(captured);
+            Assert.AreNotEqual(MviErrorPhase.PersistenceSave, capturedPhase);
+        }
+
+        [Test]
+        public void StorePersistenceCoordinator_SaveFailure_ShouldReportToErrorHandler()
+        {
+            var storage = new InMemoryStoreStateStorage();
+            var persistence = new SerializedStoreStatePersistence(
+                storage,
+                new IStoreStateSerializer[] { new JsonStoreStateSerializer() },
+                defaultSerializerId: "json");
+
+            // 抛异常的持久化对象，验证错误通过 errorHandler 上报。
+            var failingPersistence = new FailingPersistence();
+
+            Exception captured = null;
+            var coordinator = new StorePersistenceCoordinator(
+                persistenceProvider: () => failingPersistence,
+                keyProvider: () => "fail.test",
+                migrator: state => state,
+                errorHandler: (ex, phase) => captured = ex);
+
+            coordinator.Save(new SerializableState { value = 1, isUpdateNewState = true });
+            Assert.IsNotNull(captured);
+        }
+
+        private sealed class FailingPersistence : IStoreStatePersistence
+        {
+            public bool TryLoad(string key, out IState state)
+            {
+                state = null;
+                return false;
+            }
+
+            public void Save(string key, IState state) => throw new InvalidOperationException("save-failed");
+
+            public void Clear(string key)
+            {
+            }
+        }
+
+        [Test]
+        public void JsonStoreStateSerializer_DefaultRegistry_RoundTripsAcrossInstances()
+        {
+            // 同一类型走 Shared 注册器：先 Save 一遍让 Shared 记住类型，再以全新实例 Load 验证零反射路径。
+            const string key = "mvi.persistence.shared-registry";
+            var storage = new InMemoryStoreStateStorage();
+
+            var savePersistence = new SerializedStoreStatePersistence(
+                storage,
+                new IStoreStateSerializer[] { new JsonStoreStateSerializer() },
+                defaultSerializerId: "json");
+            var sample = new SerializableState { value = 7, isUpdateNewState = true };
+            savePersistence.Save(key, sample);
+
+            var loadPersistence = new SerializedStoreStatePersistence(
+                storage,
+                new IStoreStateSerializer[] { new JsonStoreStateSerializer() },
+                defaultSerializerId: "json");
+
+            Assert.IsTrue(loadPersistence.TryLoad(key, out var loaded));
+            Assert.IsInstanceOf<SerializableState>(loaded);
+            Assert.AreEqual(7, ((SerializableState)loaded).value);
+        }
+
         private static bool IsDisposed(Store store)
         {
-            var field = typeof(Store).GetField("_isDisposed", BindingFlags.NonPublic | BindingFlags.Instance);
-            return field != null && field.GetValue(store) is bool value && value;
+            // Store 已暴露 IsDisposed 公共属性，不再使用反射访问私有字段。
+            return store != null && store.IsDisposed;
         }
     }
 }

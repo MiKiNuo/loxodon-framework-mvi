@@ -323,13 +323,13 @@ namespace MVI
     /// </summary>
     public sealed class JsonStoreStateSerializer : IStoreStateSerializer
     {
-        private static readonly Dictionary<string, Type> StateTypeCache = new(StringComparer.Ordinal);
-        private static readonly object StateTypeCacheSyncRoot = new();
+        private readonly IStateTypeRegistry _registry;
 
-        public JsonStoreStateSerializer(int schemaVersion = 1, string serializerId = "json")
+        public JsonStoreStateSerializer(int schemaVersion = 1, string serializerId = "json", IStateTypeRegistry registry = null)
         {
             SchemaVersion = schemaVersion <= 0 ? 1 : schemaVersion;
             SerializerId = string.IsNullOrWhiteSpace(serializerId) ? "json" : serializerId;
+            _registry = registry ?? StateTypeRegistry.Shared;
         }
 
         public int SchemaVersion { get; }
@@ -344,6 +344,7 @@ namespace MVI
             }
 
             var stateType = state.GetType();
+            _registry.Register(stateType);
             var json = JsonUtility.ToJson(state);
             if (string.IsNullOrWhiteSpace(json))
             {
@@ -386,49 +387,12 @@ namespace MVI
             }
         }
 
-        private static Type ResolveStateType(string assemblyQualifiedName)
+        /// <summary>
+        /// 通过已注册的 <see cref="IStateTypeRegistry"/> 解析类型别名（仅字典查询，零反射）。
+        /// </summary>
+        private Type ResolveStateType(string name)
         {
-            if (string.IsNullOrWhiteSpace(assemblyQualifiedName))
-            {
-                return null;
-            }
-
-            lock (StateTypeCacheSyncRoot)
-            {
-                if (StateTypeCache.TryGetValue(assemblyQualifiedName, out var cached))
-                {
-                    return cached;
-                }
-            }
-
-            var type = Type.GetType(assemblyQualifiedName);
-            if (type != null)
-            {
-                CacheResolvedType(assemblyQualifiedName, type);
-                return type;
-            }
-
-            var assemblies = AppDomain.CurrentDomain.GetAssemblies();
-            for (var i = 0; i < assemblies.Length; i++)
-            {
-                type = assemblies[i].GetType(assemblyQualifiedName);
-                if (type != null)
-                {
-                    CacheResolvedType(assemblyQualifiedName, type);
-                    return type;
-                }
-            }
-
-            CacheResolvedType(assemblyQualifiedName, null);
-            return null;
-        }
-
-        private static void CacheResolvedType(string key, Type type)
-        {
-            lock (StateTypeCacheSyncRoot)
-            {
-                StateTypeCache[key] = type;
-            }
+            return _registry.TryResolve(name, out var resolved) ? resolved : null;
         }
     }
 

@@ -59,7 +59,7 @@ namespace MVI
         }
 
         // 状态变化回调：默认通过生成的映射器同步属性。
-        protected virtual void OnStateChanged(IState? state)
+        protected virtual void OnStateChanged(IState state)
         {
             if (state is null)
             {
@@ -128,14 +128,14 @@ namespace MVI
     // 泛型 ViewModel：提供强类型 Intent 入口。
     public abstract class MviViewModel<TIntent> : MviViewModel where TIntent : IIntent
     {
-        // 发起意图（强类型）。
-        protected new void EmitIntent(TIntent intent)
+        // 发起意图（强类型）：不使用 new 关键字以避免与基类同名方法产生虚调度混淆。
+        protected void EmitIntent(TIntent intent)
         {
             base.EmitIntent(intent);
         }
 
         // 发起可取消意图（强类型）。
-        protected new void EmitIntent(TIntent intent, CancellationToken cancellationToken)
+        protected void EmitIntent(TIntent intent, CancellationToken cancellationToken)
         {
             base.EmitIntent(intent, cancellationToken);
         }
@@ -154,7 +154,7 @@ namespace MVI
         // 当前状态快照（强类型）。
         public new TState CurrentState => Store?.CurrentState;
 
-        public new void BindStore(Store<TState, TIntent, TResult> store, bool disposeStore = true)
+        public void BindStore(Store<TState, TIntent, TResult> store, bool disposeStore = true)
         {
             Store = store;
             base.BindStore(store, disposeStore);
@@ -166,7 +166,7 @@ namespace MVI
             Store = null;
         }
 
-        protected sealed override void OnStateChanged(IState? state)
+        protected sealed override void OnStateChanged(IState state)
         {
             base.OnStateChanged(state);
             if (state is TState typed)
@@ -191,7 +191,7 @@ namespace MVI
 
         protected Observable<TEffect> Effects => Store?.Effects;
 
-        public new void BindStore(Store<TState, TIntent, TResult, TEffect> store, bool disposeStore = true)
+        public void BindStore(Store<TState, TIntent, TResult, TEffect> store, bool disposeStore = true)
         {
             Store = store;
             base.BindStore(store, disposeStore);

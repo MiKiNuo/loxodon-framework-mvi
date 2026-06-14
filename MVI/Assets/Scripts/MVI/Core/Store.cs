@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -15,19 +14,15 @@ namespace MVI
         private readonly Subject<IntentEnvelope> _intentSubject = new();
         private readonly Subject<IMviEffect> _effectSubject = new();
         private readonly Subject<MviErrorEffect> _errorSubject = new();
-        private static readonly Type[] LegacyErrorHandlerSignature = { typeof(Exception) };
-        private static readonly Type[] DecisionErrorHandlerSignature = { typeof(Exception), typeof(MviErrorDecision) };
         private readonly CompositeDisposable _disposables = new();
         private readonly CancellationTokenSource _storeCts = new();
         private readonly List<IStoreMiddleware> _middlewares = new();
         private readonly Dictionary<Type, IntentProcessingPolicy> _intentPolicies = new();
-        private readonly List<IState> _stateHistory = new();
+        private readonly StateHistoryStore _history = new();
+        private StorePersistenceCoordinator _persistenceCoordinator;
         private readonly object _middlewareSyncRoot = new();
-        private readonly bool _hasLegacyErrorHandlerOverride;
-        private readonly bool _hasDecisionErrorHandlerOverride;
         private long _middlewareCorrelationSequence;
         private IState _currentState;
-        private int _stateHistoryIndex = -1;
         private bool _isDisposed;
 
         private readonly struct IntentEnvelope
@@ -56,30 +51,45 @@ namespace MVI
         public Observable<MviErrorEffect> Errors => _errorSubject;
 
         // Undo/Redo 状态历史总数。
-        public int StateHistoryCount => _stateHistory.Count;
+        public int StateHistoryCount => _history.Count;
 
         // 当前历史游标（-1 表示无历史）。
-        public int CurrentStateHistoryIndex => _stateHistoryIndex;
+        public int CurrentStateHistoryIndex => _history.CurrentIndex;
 
-        public bool CanUndo => _stateHistoryIndex > 0;
+        public bool CanUndo => _history.CanUndo;
 
-        public bool CanRedo => _stateHistoryIndex >= 0 && _stateHistoryIndex < _stateHistory.Count - 1;
+        public bool CanRedo => _history.CanRedo;
+
+        // Store 是否已释放（供测试与诊断使用，替代反射访问私有 _isDisposed）。
+        public bool IsDisposed => _isDisposed;
 
         protected Store()
         {
             State = _stateSubject.ToReadOnlyReactiveProperty();
-            DetectErrorHandlerOverrides(out _hasLegacyErrorHandlerOverride, out _hasDecisionErrorHandlerOverride);
             ApplyProfileDefaults();
             ConfigureMiddlewares(_middlewares);
             ApplyProfileMiddlewares();
             ConfigureIntentProcessingPolicies(_intentPolicies);
             ApplyProfileIntentPolicies();
+            _persistenceCoordinator = CreatePersistenceCoordinator();
             if (!TryRestorePersistedState())
             {
                 InitializeState();
             }
 
             Process(_intentSubject);
+        }
+
+        /// <summary>
+        /// 创建持久化协作器：把 Save/Restore/迁移委托到该对象，避免 Store 主体承担这些职责。
+        /// </summary>
+        private StorePersistenceCoordinator CreatePersistenceCoordinator()
+        {
+            return new StorePersistenceCoordinator(
+                persistenceProvider: () => Persistence,
+                keyProvider: () => PersistenceKey,
+                migrator: MigratePersistedState,
+                errorHandler: (ex, phase) => HandleNonIntentError(ex, phase));
         }
 
         // Store 统一配置（默认读取全局 Profile，可由子类覆写）。
@@ -109,6 +119,10 @@ namespace MVI
 
         // 当前 Store 的错误处理策略（默认发出 Error/Effect）。
         protected virtual IMviErrorStrategy ErrorStrategy => Profile?.ErrorStrategy ?? MviStoreOptions.DefaultErrorStrategy ?? DefaultMviErrorStrategy.Instance;
+
+        // 错误钩子路由模式：业务可覆写以选择走旧签名（Legacy）还是新签名（Decision，默认）。
+        // 该虚拟属性替代了之前通过反射探测子类 OnProcessError 覆写的实现。
+        protected virtual MviErrorHookMode ErrorHookMode => MviErrorHookMode.Decision;
 
         // 持久化键（默认使用完整类型名）。
         protected virtual string PersistenceKey => GetType().FullName;
@@ -278,13 +292,13 @@ namespace MVI
         // Undo 到前一个状态。
         public bool UndoState()
         {
-            return TryApplyHistoryAt(_stateHistoryIndex - 1, MviTimelineEventKind.Undo, "undo");
+            return TryApplyHistoryAt(_history.CurrentIndex - 1, MviTimelineEventKind.Undo, "undo");
         }
 
         // Redo 到后一个状态。
         public bool RedoState()
         {
-            return TryApplyHistoryAt(_stateHistoryIndex + 1, MviTimelineEventKind.Redo, "redo");
+            return TryApplyHistoryAt(_history.CurrentIndex + 1, MviTimelineEventKind.Redo, "redo");
         }
 
         // Time-travel 到指定历史索引。
@@ -461,8 +475,8 @@ namespace MVI
 
         protected virtual void OnProcessError(Exception ex, MviErrorDecision decision)
         {
-            // 兼容旧扩展点：若业务仅覆写旧签名，则优先回退到旧钩子。
-            if (_hasLegacyErrorHandlerOverride && !_hasDecisionErrorHandlerOverride)
+            // 兼容旧扩展点：业务仅覆写旧签名时，由 ErrorHookMode 显式启用回退（旧实现是反射探测）。
+            if (ErrorHookMode == MviErrorHookMode.Legacy)
             {
                 OnProcessError(ex);
                 return;
@@ -487,26 +501,6 @@ namespace MVI
             {
                 MviDiagnostics.Trace($"[Store:{GetType().Name}] Error: {traceNote} | {ex}");
             }
-        }
-
-        private void DetectErrorHandlerOverrides(out bool legacyOverride, out bool decisionOverride)
-        {
-            var runtimeType = GetType();
-            var legacyMethod = runtimeType.GetMethod(
-                nameof(OnProcessError),
-                BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public,
-                binder: null,
-                types: LegacyErrorHandlerSignature,
-                modifiers: null);
-            var decisionMethod = runtimeType.GetMethod(
-                nameof(OnProcessError),
-                BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public,
-                binder: null,
-                types: DecisionErrorHandlerSignature,
-                modifiers: null);
-
-            legacyOverride = legacyMethod != null && legacyMethod.DeclaringType != typeof(Store);
-            decisionOverride = decisionMethod != null && decisionMethod.DeclaringType != typeof(Store);
         }
 
         private static string BuildErrorTraceNote(Exception ex, MviErrorDecision decision)
@@ -766,26 +760,9 @@ namespace MVI
 
         private void RecordStateHistory(IState state)
         {
-            var capacity = StateHistoryCapacity;
-            if (capacity <= 0)
-            {
-                _stateHistory.Clear();
-                _stateHistoryIndex = -1;
-                return;
-            }
-
-            if (_stateHistoryIndex >= 0 && _stateHistoryIndex < _stateHistory.Count - 1)
-            {
-                _stateHistory.RemoveRange(_stateHistoryIndex + 1, _stateHistory.Count - _stateHistoryIndex - 1);
-            }
-
-            _stateHistory.Add(state);
-            if (_stateHistory.Count > capacity)
-            {
-                _stateHistory.RemoveRange(0, _stateHistory.Count - capacity);
-            }
-
-            _stateHistoryIndex = _stateHistory.Count - 1;
+            // 每次写入前同步一次容量，使 Store.StateHistoryCapacity 的动态覆写生效。
+            _history.Capacity = StateHistoryCapacity;
+            _history.Record(state);
         }
 
         private bool TryApplyHistoryAt(int index, MviTimelineEventKind timelineKind, string note)
@@ -795,32 +772,18 @@ namespace MVI
                 return false;
             }
 
-            if (index < 0 || index >= _stateHistory.Count)
+            if (!_history.TryGetAt(index, out var state) || state == null)
             {
                 return false;
             }
 
-            _stateHistoryIndex = index;
-            ApplyStateInternal(_stateHistory[index], trackHistory: false, persistState: true, timelineKind: timelineKind, timelineNote: note);
+            ApplyStateInternal(state, trackHistory: false, persistState: true, timelineKind: timelineKind, timelineNote: note);
             return true;
         }
 
         private void UpdateHistoryIndexForState(IState state)
         {
-            if (state == null || _stateHistory.Count == 0)
-            {
-                return;
-            }
-
-            for (var i = _stateHistory.Count - 1; i >= 0; i--)
-            {
-                var candidate = _stateHistory[i];
-                if (ReferenceEquals(candidate, state) || Equals(candidate, state))
-                {
-                    _stateHistoryIndex = i;
-                    return;
-                }
-            }
+            _history.TryLocate(state);
         }
 
         private async ValueTask<MviErrorDecision> ResolveErrorDecisionAsync(
@@ -882,53 +845,23 @@ namespace MVI
 
         private bool TryRestorePersistedState()
         {
-            var persistence = Persistence;
-            var key = PersistenceKey;
-            if (persistence == null || string.IsNullOrWhiteSpace(key))
+            if (_persistenceCoordinator == null)
             {
                 return false;
             }
 
-            try
+            if (!_persistenceCoordinator.TryRestore(out var migrated))
             {
-                if (!persistence.TryLoad(key, out var persisted) || persisted == null)
-                {
-                    return false;
-                }
-
-                var migrated = MigratePersistedState(persisted);
-                if (migrated == null)
-                {
-                    return false;
-                }
-
-                SetInitialState(migrated);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                HandleNonIntentError(ex, MviErrorPhase.PersistenceLoad);
                 return false;
             }
+
+            SetInitialState(migrated);
+            return true;
         }
 
         private void PersistState(IState state)
         {
-            var persistence = Persistence;
-            var key = PersistenceKey;
-            if (persistence == null || string.IsNullOrWhiteSpace(key) || state == null)
-            {
-                return;
-            }
-
-            try
-            {
-                persistence.Save(key, state);
-            }
-            catch (Exception ex)
-            {
-                HandleNonIntentError(ex, MviErrorPhase.PersistenceSave);
-            }
+            _persistenceCoordinator?.Save(state);
         }
 
         public void Dispose()
@@ -942,8 +875,7 @@ namespace MVI
             _storeCts.Cancel();
             _disposables.Dispose();
             _storeCts.Dispose();
-            _stateHistory.Clear();
-            _stateHistoryIndex = -1;
+            _history.Clear();
             MviDevTools.Detach(this);
 
             if (_stateSubject is IDisposable stateDisposable)
