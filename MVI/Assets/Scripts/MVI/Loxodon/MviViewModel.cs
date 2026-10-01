@@ -33,6 +33,11 @@ namespace MVI
                 throw new ArgumentNullException(nameof(store));
             }
 
+            if (!IsCompatibleStore(store))
+            {
+                throw new ArgumentException("Store 类型与 ViewModel 不匹配。", nameof(store));
+            }
+
             if (ReferenceEquals(Store, store))
             {
                 _disposeStore = disposeStore;
@@ -57,6 +62,8 @@ namespace MVI
                 .Subscribe(OnError)
                 .AddTo(_storeDisposables);
         }
+
+        protected virtual bool IsCompatibleStore(Store store) => true;
 
         // 状态变化回调：默认通过生成的映射器同步属性。
         protected virtual void OnStateChanged(IState state)
@@ -147,7 +154,7 @@ namespace MVI
         where TIntent : IIntent
         where TResult : IMviResult
     {
-        protected new Store<TState, TIntent, TResult> Store { get; private set; }
+        protected new Store<TState, TIntent, TResult> Store => (Store<TState, TIntent, TResult>)base.Store;
 
         protected ReadOnlyReactiveProperty<TState> State => Store?.State;
 
@@ -156,15 +163,10 @@ namespace MVI
 
         public void BindStore(Store<TState, TIntent, TResult> store, bool disposeStore = true)
         {
-            Store = store;
             base.BindStore(store, disposeStore);
         }
 
-        protected override void Dispose(bool disposing)
-        {
-            base.Dispose(disposing);
-            Store = null;
-        }
+        protected override bool IsCompatibleStore(Store store) => store is Store<TState, TIntent, TResult>;
 
         protected sealed override void OnStateChanged(IState state)
         {
@@ -187,21 +189,16 @@ namespace MVI
         where TResult : IMviResult
         where TEffect : class, IMviEffect
     {
-        protected new Store<TState, TIntent, TResult, TEffect> Store { get; private set; }
+        protected new Store<TState, TIntent, TResult, TEffect> Store => (Store<TState, TIntent, TResult, TEffect>)base.Store;
 
         protected Observable<TEffect> Effects => Store?.Effects;
 
         public void BindStore(Store<TState, TIntent, TResult, TEffect> store, bool disposeStore = true)
         {
-            Store = store;
             base.BindStore(store, disposeStore);
         }
 
-        protected override void Dispose(bool disposing)
-        {
-            base.Dispose(disposing);
-            Store = null;
-        }
+        protected override bool IsCompatibleStore(Store store) => store is Store<TState, TIntent, TResult, TEffect>;
 
         protected sealed override void OnEffect(IMviEffect effect)
         {

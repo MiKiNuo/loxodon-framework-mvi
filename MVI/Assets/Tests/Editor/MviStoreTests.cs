@@ -8,6 +8,8 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using MVI;
+using MVI.Components;
+using MVI.Composition;
 using NUnit.Framework;
 using R3;
 using UnityEngine;
@@ -1802,6 +1804,88 @@ namespace MVI.Tests
             Assert.IsNotNull(captured);
         }
 
+        [Test]
+        public void ComposableComponentHub_ShouldRegisterAndRetrieveComponents()
+        {
+            var hub = new ComposableComponentHub();
+            var vm = new SerializableState { value = 5, isUpdateNewState = true };
+
+            Assert.IsFalse(hub.HasComponent("hub.c1"));
+            Assert.IsTrue(hub.TryRegisterComponent("hub.c1", "view-stub", vm));
+            Assert.IsTrue(hub.HasComponent("hub.c1"));
+            Assert.AreSame(vm, hub.GetViewModel<SerializableState>("hub.c1"));
+
+            // 重复注册返回 false。
+            Assert.IsFalse(hub.TryRegisterComponent("hub.c1", "view-stub", vm));
+        }
+
+        [Test]
+        public void ComposableComponentHub_EmitComponentEvent_ShouldRaiseHubEvent()
+        {
+            var hub = new ComposableComponentHub();
+            var captured = default(ComponentEvent);
+            var raised = false;
+            hub.ComponentEventRaised += e =>
+            {
+                captured = e;
+                raised = true;
+            };
+
+            hub.EmitComponentEvent("hub.c2", "click", "payload-x");
+            Assert.IsTrue(raised);
+            Assert.AreEqual("hub.c2", captured.ComponentId);
+            Assert.AreEqual("click", captured.EventName);
+        }
+
+        [Test]
+        public void ComposableComponentHub_TrackSubscription_InvokesSubscribeAndCleanup()
+        {
+            var hub = new ComposableComponentHub();
+            int subscribeCount = 0;
+            int unsubscribeCount = 0;
+            hub.TrackSubscription(
+                subscribe: () => subscribeCount++,
+                unsubscribe: () => unsubscribeCount++);
+
+            Assert.AreEqual(1, subscribeCount);
+            Assert.AreEqual(0, unsubscribeCount);
+
+            hub.Dispose();
+            Assert.AreEqual(1, unsubscribeCount);
+        }
+
+        [Test]
+        public void ComposableComponentHub_WrapPropsComparer_ShouldHandleNullsAndTypeChecks()
+        {
+            Func<int, int, bool> raw = (a, b) => a == b;
+            var wrapped = ComposableComponentHub.WrapPropsComparer<int>(raw);
+
+            Assert.IsTrue(wrapped(1, 1));
+            Assert.IsFalse(wrapped(1, 2));
+            Assert.IsTrue(wrapped(null, null));
+            Assert.IsFalse(wrapped(null, 1));
+            Assert.IsFalse(wrapped(1, null));
+        }
+
+        [Test]
+        public void ComposableComponentBuilder_OnHandler_ShouldFireOnEmit()
+        {
+            var hub = new ComposableComponentHub();
+            hub.TryRegisterComponent("hub.c3", "view-stub", new object());
+
+            var builder = new ComposableComponentBuilder<object, object>(hub, "hub.c3", null);
+            bool handlerInvoked = false;
+            int capturedPayload = 0;
+            builder.On<int>("increment",
+                handler: p => { handlerInvoked = true; capturedPayload = p; },
+                subscribe: sub => { /* no-op for unit test */ },
+                unsubscribe: unsub => { /* no-op for unit test */ });
+
+            hub.EmitComponentEvent("hub.c3", "increment", 42);
+            Assert.IsTrue(handlerInvoked);
+            Assert.AreEqual(42, capturedPayload);
+        }
+
         private sealed class FailingPersistence : IStoreStatePersistence
         {
             public bool TryLoad(string key, out IState state)
@@ -1845,6 +1929,78 @@ namespace MVI.Tests
         {
             // Store 已暴露 IsDisposed 公共属性，不再使用反射访问私有字段。
             return store != null && store.IsDisposed;
+        }
+
+        // 回归测试：Store 不再直接写 MviDevTools 静态字段，所有配置都走 DevToolsHost 契约。
+        [Test]
+        public void MviDevToolsHost_ConfigurationProperties_AreConfigurable()
+        {
+            var host = new MviDevToolsHost();
+            var originalEnabled = host.Enabled;
+            var originalMax = host.MaxEventsPerStore;
+            try
+            {
+                host.Enabled = true;
+                host.MaxEventsPerStore = 123;
+                host.SamplingOptions = new MviDevToolsSamplingOptions { SampleRate = 0.5d };
+
+                Assert.IsTrue(host.Enabled);
+                Assert.AreEqual(123, host.MaxEventsPerStore);
+                Assert.AreEqual(0.5d, host.SamplingOptions.SampleRate);
+            }
+            finally
+            {
+                host.Enabled = originalEnabled;
+                host.MaxEventsPerStore = originalMax;
+                host.SamplingOptions = new MviDevToolsSamplingOptions();
+            }
+        }
+
+        [Test]
+        public void NullMviDevToolsHost_AlwaysDisabledAndAcceptsConfiguration()
+        {
+            // 验证 NullMviDevToolsHost 的配置 set 是无副作用的（不会抛异常），get 永远返回"禁用"语义。
+            var host = NullMviDevToolsHost.Shared;
+            Assert.IsFalse(host.Enabled);
+            Assert.AreEqual(0, host.MaxEventsPerStore);
+
+            Assert.DoesNotThrow(() =>
+            {
+                host.Enabled = true;
+                host.MaxEventsPerStore = 9999;
+                host.SamplingOptions = new MviDevToolsSamplingOptions { SampleRate = 0.1d };
+            });
+
+            // 仍然返回"禁用"基线值。
+            Assert.IsFalse(host.Enabled);
+            Assert.AreEqual(0, host.MaxEventsPerStore);
+        }
+
+        [Test]
+        public void MviDevToolsHost_Track_DelegatesToMviDevTools()
+        {
+            // 仅验证 Track 链路不抛异常且返回类型正确。完整事件验证在 MviDevTools 自身测试中。
+            var host = MviDevToolsHost.Shared;
+            var store = new DevToolsTestStore();
+            try
+            {
+                host.Track(store, MviTimelineEventKind.Intent, new SetValueIntent(1));
+                var snapshot = host.GetTimelineSnapshot(store);
+                Assert.IsNotNull(snapshot);
+                host.Clear(store);
+                var afterClear = host.GetTimelineSnapshot(store);
+                Assert.IsNotNull(afterClear);
+            }
+            finally
+            {
+                host.Detach(store);
+            }
+        }
+
+        // 极简 TestStore，仅用于 DevToolsHost Track/Detch 调用验证。
+        private sealed class DevToolsTestStore : Store
+        {
+            protected override IState CreateInitialState() => new TestState();
         }
     }
 }

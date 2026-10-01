@@ -1,4 +1,6 @@
 using System;
+using System.Reflection;
+using Loxodon.Framework.Binding;
 using Loxodon.Framework.Views;
 using MVI.Components;
 using MVI.Composition;
@@ -8,40 +10,29 @@ namespace MVI.UIAdapters.UGUI
 {
     /// <summary>
     /// UGUI 适配器：负责 UGUI View 的加载、挂载、绑定与销毁。
-    /// 通过显式 IViewLoader 委托加载，移除原先的反射调用。
+    /// 通过显式 <see cref="IUIViewLocator"/> 委托加载，整个加载链路经
+    /// <see cref="UIViewLoaderDispatcher"/> 的类型擦除桥完成，
+    /// 桥接仅在初始化阶段通过 <see cref="Delegate.CreateDelegate(Type, MethodInfo)"/>
+    /// 一次性绑定静态泛型方法，运行时无反射。
     /// </summary>
     public sealed class UguiViewHost : IViewHost
     {
-        private readonly IViewLoader _viewLoader;
+        private readonly IUIViewLocator _viewLocator;
 
-        public UguiViewHost(IViewLoader viewLoader)
+        public UguiViewHost(IUIViewLocator viewLocator)
         {
-            _viewLoader = viewLoader ?? throw new ArgumentNullException(nameof(viewLoader));
+            _viewLocator = viewLocator ?? throw new ArgumentNullException(nameof(viewLocator));
         }
 
-        /// <summary>
-        /// 兼容旧调用：传入 IUIViewLocator 时自动包装为反射式 IViewLoader（仅用于过渡）。
-        /// 业务侧应改为直接注入 IViewLoader。
-        /// </summary>
-        [Obsolete("Use UguiViewHost(IViewLoader) directly. The IUIViewLocator path uses reflection and will be removed.")]
-        public UguiViewHost(object viewLocator)
+        public TView Load<TView>(string resourcePath) where TView : class
         {
-            if (viewLocator == null)
-            {
-                throw new ArgumentNullException(nameof(viewLocator));
-            }
-
-            _viewLoader = new ReflectionFallbackViewLoader(viewLocator);
-        }
-
-        public object Load(Type viewType, string resourcePath)
-        {
-            if (viewType == null || string.IsNullOrWhiteSpace(resourcePath))
+            if (string.IsNullOrWhiteSpace(resourcePath))
             {
                 return null;
             }
 
-            return _viewLoader.Load(viewType, resourcePath);
+            // UIViewLoaderDispatcher 内部已校验 UIView 派生关系并做类型擦除派发。
+            return UIViewLoaderDispatcher.Load(_viewLocator, typeof(TView), resourcePath) as TView;
         }
 
         public void Attach(object view, object mountPoint)
@@ -75,57 +66,6 @@ namespace MVI.UIAdapters.UGUI
             {
                 UnityEngine.Object.Destroy(component.gameObject);
             }
-        }
-    }
-
-    /// <summary>
-    /// 反射式 IViewLoader 兜底实现：仅用于旧 IUIViewLocator 调用路径，新业务应直接实现 IViewLoader。
-    /// 该类型属于过渡实现，保留是为了不立即破坏公开 API；后续版本会彻底移除反射。
-    /// </summary>
-    internal sealed class ReflectionFallbackViewLoader : IViewLoader
-    {
-        private readonly object _viewLocator;
-        private readonly System.Reflection.MethodInfo _loadMethod;
-
-        public ReflectionFallbackViewLoader(object viewLocator)
-        {
-            _viewLocator = viewLocator;
-            _loadMethod = FindLoadViewMethod(viewLocator?.GetType());
-        }
-
-        public object Load(Type viewType, string resourcePath)
-        {
-            if (_loadMethod == null || _viewLocator == null || viewType == null)
-            {
-                return null;
-            }
-
-            try
-            {
-                var genericLoad = _loadMethod.MakeGenericMethod(viewType);
-                return genericLoad.Invoke(_viewLocator, new object[] { resourcePath });
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private static System.Reflection.MethodInfo FindLoadViewMethod(Type locatorType)
-        {
-            if (locatorType == null)
-            {
-                return null;
-            }
-
-            // 反射仅在构造时发生一次（缓存到 _loadMethod），运行期 Load 走缓存后的泛型方法绑定。
-            return System.Linq.Enumerable.FirstOrDefault(
-                locatorType.GetMethods(),
-                method =>
-                    method.Name == "LoadView"
-                    && method.IsGenericMethodDefinition
-                    && method.GetParameters().Length == 1
-                    && method.GetParameters()[0].ParameterType == typeof(string));
         }
     }
 }

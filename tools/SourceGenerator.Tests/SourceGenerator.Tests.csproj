@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>9</LangVersion>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../MVI/SourceGenerator/MapperSourceGenerator.cs" Link="MapperSourceGenerator.cs" />
+    <None Include="../../MVI/Assets/Scripts/MVI/Core/IState.cs" Link="Fixtures/IState.cs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../MVI/Assets/Scripts/MVI/Core/MviMappingAttributes.cs" Link="Fixtures/MviMappingAttributes.cs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../MVI/Assets/Scripts/MVI/Loxodon/MviStateMapper.cs" Link="Fixtures/MviStateMapper.cs" CopyToOutputDirectory="PreserveNewest" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.3.1" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="NUnit" Version="3.14.0" />
+    <PackageReference Include="NUnit3TestAdapter" Version="4.5.0" />
+  </ItemGroup>
+</Project>

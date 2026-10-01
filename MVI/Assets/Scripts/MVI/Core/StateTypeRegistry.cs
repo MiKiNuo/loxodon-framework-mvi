@@ -9,6 +9,8 @@ namespace MVI
     /// </summary>
     /// <remarks>
     /// 业务侧通常在启动阶段（模块装配、源生成器或 DI 引导）调用 <see cref="Register"/> 注册所有可被持久化的 <see cref="IState"/> 实现。
+    /// 映射仅保存在当前进程，不随快照保存；新进程首次加载前应重新登记。
+    /// 自定义注册器需显式注入序列化器，不能依赖全局 Shared 的登记。
     /// 注册器内部以线程安全字典保存映射，反序列化时只走字典查询，不再触发任何反射调用。
     /// </remarks>
     public interface IStateTypeRegistry
@@ -30,7 +32,7 @@ namespace MVI
     }
 
     /// <summary>
-    /// 默认 <see cref="IStateTypeRegistry"/> 实现：使用读写锁保护的字典存储映射。
+    /// 默认 <see cref="IStateTypeRegistry"/> 实现：使用锁保护的字典存储映射。
     /// </summary>
     public sealed class StateTypeRegistry : IStateTypeRegistry
     {

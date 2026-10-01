@@ -1,6 +1,7 @@
 {
     "name": "MVI.Tests",
     "references": [
+        "FairyGUI",
         "MVI.Core",
         "MVI.Loxodon",
         "MVI.FairyGUI",

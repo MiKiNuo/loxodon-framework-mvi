@@ -132,25 +132,28 @@ namespace MVI.Tests
         }
 
         [Test]
-        public void EventRoute_ShouldDispatchToHandler()
+        public void EventRoute_ShouldDispatchExactlyOnceToHandler()
         {
             var go = new GameObject("TestComposedFairyView");
             try
             {
                 var view = go.AddComponent<TestComposedView>();
-                var called = false;
+                var callCount = 0;
+                var notificationCount = 0;
+                view.ComponentEventRaised += _ => notificationCount++;
 
                 view.ExposeAddRoute<int>("Counter", "CountChanged", payload =>
                 {
                     if (payload == 3)
                     {
-                        called = true;
+                        callCount++;
                     }
                 });
 
                 view.ExposeEmit("Counter", "CountChanged", 3);
 
-                Assert.IsTrue(called);
+                Assert.AreEqual(1, notificationCount);
+                Assert.AreEqual(1, callCount);
             }
             finally
             {

@@ -11,6 +11,7 @@ using UnityEngine;
 namespace MVI.FairyGUI.Composed
 {
     // FairyGUI 组合式 View 基类：负责资源加载、组件注册与事件路由。
+    // 通用"组件中枢"职责交给 ComposableComponentHub；本类只保留 FairyGUI 特有的资源加载与视图管理。
     public abstract class ComposedFairyViewBase : MonoBehaviour
     {
         [Header("FairyGUI 资源加载")]
@@ -21,122 +22,11 @@ namespace MVI.FairyGUI.Composed
         [SerializeField] private bool addToGRoot = true;
         [SerializeField] private bool autoCreateView = true;
 
-        protected sealed class CompositionBuilder
-        {
-            private readonly ComposedFairyViewBase owner;
-
-            public CompositionBuilder(ComposedFairyViewBase owner)
-            {
-                this.owner = owner;
-            }
-
-            // 声明式注册组件，返回链式 builder。
-            public ComponentBuilder<TView, TViewModel> Component<TView, TViewModel>(
-                string componentId,
-                TView view,
-                TViewModel viewModel)
-                where TView : class, IFairyView
-            {
-                owner.RegisterComponent<TView, TViewModel>(componentId, view, viewModel);
-                return new ComponentBuilder<TView, TViewModel>(owner, componentId, viewModel);
-            }
-        }
-
-        protected sealed class ComponentBuilder<TView, TViewModel>
-            where TView : class, IFairyView
-        {
-            private readonly ComposedFairyViewBase owner;
-            private readonly string componentId;
-
-            public ComponentBuilder(ComposedFairyViewBase owner, string componentId, TViewModel viewModel)
-            {
-                this.owner = owner;
-                this.componentId = componentId;
-            }
-
-            // 注入 props，并走自动 diff。
-            public ComponentBuilder<TView, TViewModel> WithProps<TProps>(TProps props)
-            {
-                owner.ApplyProps(componentId, props);
-                return this;
-            }
-
-            // 注入 props，并指定自定义比较器。
-            public ComponentBuilder<TView, TViewModel> WithProps<TProps>(TProps props, Func<TProps, TProps, bool> comparer)
-            {
-                if (comparer != null)
-                {
-                    owner.SetPropsComparer(componentId, comparer);
-                }
-
-                owner.ApplyProps(componentId, props);
-                return this;
-            }
-
-            // 仅设置 props 比较器（不立即注入）。
-            public ComponentBuilder<TView, TViewModel> CompareProps<TProps>(Func<TProps, TProps, bool> comparer)
-            {
-                if (comparer != null)
-                {
-                    owner.SetPropsComparer(componentId, comparer);
-                }
-
-                return this;
-            }
-
-            // 统一事件输出与订阅管理。
-            public ComponentBuilder<TView, TViewModel> On<TPayload>(
-                string eventName,
-                Action<TPayload> handler,
-                Action<Action<TPayload>> subscribe,
-                Action<Action<TPayload>> unsubscribe)
-            {
-                if (handler != null)
-                {
-                    owner.AddEventRoute(componentId, eventName, typeof(TPayload), payload =>
-                    {
-                        if (payload is TPayload typed)
-                        {
-                            handler(typed);
-                        }
-                    });
-                }
-
-                owner.TrackComponentEvent(componentId, eventName, subscribe, unsubscribe);
-                return this;
-            }
-        }
-
-        protected sealed class EventRouteBuilder
-        {
-            private readonly ComposedFairyViewBase owner;
-
-            public EventRouteBuilder(ComposedFairyViewBase owner)
-            {
-                this.owner = owner;
-            }
-
-            public void On<TPayload>(string componentId, string eventName, Action<TPayload> handler)
-            {
-                if (handler == null)
-                {
-                    return;
-                }
-
-                owner.AddEventRoute(componentId, eventName, typeof(TPayload), payload =>
-                {
-                    if (payload is TPayload typed)
-                    {
-                        handler(typed);
-                    }
-                });
-            }
-        }
-
-        private readonly CompositionRuntime composition = new();
+        private readonly ComposableComponentHub componentHub = new();
         private readonly CancellationTokenSource viewCts = new();
 
         private GComponent root;
+        private bool ownsRoot;
         private bool isComposed;
         private FairyViewHost viewHost;
         private IFairyPackageLoader packageLoader;
@@ -168,7 +58,7 @@ namespace MVI.FairyGUI.Composed
 
         protected ComposedFairyViewBase()
         {
-            composition.ComponentEventRaised += OnRuntimeComponentEventRaised;
+            componentHub.ComponentEventRaised += OnHubComponentEventRaised;
         }
 
         protected virtual FairyViewHost CreateViewHost()
@@ -219,15 +109,15 @@ namespace MVI.FairyGUI.Composed
             configure(builder);
         }
 
-        // 兼容：批量注册事件路由。
-        protected void RegisterEventRoutes(Action<EventRouteBuilder> configure)
+        // 兼容：批量注册事件路由（走共享内核）。
+        protected void RegisterEventRoutes(Action<ComposableEventRouteBuilder> configure)
         {
             if (configure == null)
             {
                 return;
             }
 
-            var builder = new EventRouteBuilder(this);
+            var builder = new ComposableEventRouteBuilder(componentHub);
             configure(builder);
         }
 
@@ -246,13 +136,7 @@ namespace MVI.FairyGUI.Composed
             Func<TProps, TProps, bool> comparer)
             where TView : class, IFairyView
         {
-            return RegisterComponentInternal(componentId, view, viewModel, comparer == null ? null : WrapPropsComparer(comparer));
-        }
-
-        // 设置 props 比较器（会清空上一次 props）。
-        protected void SetPropsComparer<TProps>(string componentId, Func<TProps, TProps, bool> comparer)
-        {
-            composition.SetPropsComparer(componentId, comparer);
+            return RegisterComponentInternal(componentId, view, viewModel, comparer == null ? null : ComposableComponentHub.WrapPropsComparer(comparer));
         }
 
         private TView RegisterComponentInternal<TView, TViewModel>(
@@ -267,28 +151,34 @@ namespace MVI.FairyGUI.Composed
                 throw new ArgumentException("componentId is required.");
             }
 
-            if (composition.HasComponent(componentId))
+            if (componentHub.HasComponent(componentId))
             {
-                return composition.GetView<TView>(componentId);
+                return componentHub.GetView<TView>(componentId);
             }
 
             BindView(view, viewModel);
             TrackView(view);
             TrackDisposable(viewModel as IDisposable);
-            composition.TryRegisterComponent(componentId, view, viewModel, propsComparer);
+            componentHub.TryRegisterComponent(componentId, view, viewModel, propsComparer);
             return view;
+        }
+
+        // 设置 props 比较器（会清空上一次 props）。
+        protected void SetPropsComparer<TProps>(string componentId, Func<TProps, TProps, bool> comparer)
+        {
+            componentHub.SetPropsComparer(componentId, comparer);
         }
 
         // 按组件 ID 获取视图。
         protected TView GetView<TView>(string componentId) where TView : class
         {
-            return composition.GetView<TView>(componentId);
+            return componentHub.GetView<TView>(componentId);
         }
 
         // 按组件 ID 获取 ViewModel。
         protected TViewModel GetViewModel<TViewModel>(string componentId) where TViewModel : class
         {
-            return composition.GetViewModel<TViewModel>(componentId);
+            return componentHub.GetViewModel<TViewModel>(componentId);
         }
 
         // 设置 DataContext 并绑定。
@@ -300,13 +190,13 @@ namespace MVI.FairyGUI.Composed
         // 直接对 ViewModel 注入 props（绕过 diff）。
         protected void ApplyProps<TProps>(object viewModel, TProps props)
         {
-            CompositionRuntime.ApplyPropsDirect(viewModel, props);
+            ComposableComponentHub.ApplyPropsDirect(viewModel, props);
         }
 
         // 对组件注入 props（自动 diff）。
         protected void ApplyProps<TProps>(string componentId, TProps props)
         {
-            composition.ApplyProps(componentId, props);
+            componentHub.ApplyProps(componentId, props);
         }
 
         // 组件事件订阅，统一输出 ComponentEvent。
@@ -321,38 +211,37 @@ namespace MVI.FairyGUI.Composed
                 return;
             }
 
-            Action<TPayload> handler = payload => EmitComponentEvent(componentId, eventName, payload);
-            TrackSubscription(() => subscribe(handler), () => unsubscribe(handler));
+            Action<TPayload> handler = payload => componentHub.EmitComponentEvent(componentId, eventName, payload);
+            componentHub.TrackSubscription(() => subscribe(handler), () => unsubscribe(handler));
         }
 
-        // 事件统一入口，默认走路由表。
+        // 组件事件通知扩展点；路由由 CompositionRuntime 统一派发一次。
         protected virtual void OnComponentEvent(ComponentEvent componentEvent)
         {
-            composition.DispatchEventRoutes(componentEvent);
         }
 
         // 手动触发组件事件（必要时可直接调用）。
         protected void EmitComponentEvent(string componentId, string eventName, object payload)
         {
-            composition.EmitComponentEvent(componentId, eventName, payload);
+            componentHub.EmitComponentEvent(componentId, eventName, payload);
         }
 
         // 添加事件路由。
         protected void AddEventRoute(string componentId, string eventName, Type payloadType, Action<object> handler)
         {
-            composition.AddEventRoute(componentId, eventName, payloadType, handler);
+            componentHub.AddEventRoute(componentId, eventName, payloadType, handler);
         }
 
         // 统一订阅/解绑管理。
         protected void TrackSubscription(Action subscribe, Action unsubscribe)
         {
-            composition.TrackSubscription(subscribe, unsubscribe);
+            componentHub.TrackSubscription(subscribe, unsubscribe);
         }
 
         // 统一销毁 ViewModel 或 View。
         protected void TrackDisposable(IDisposable disposable)
         {
-            composition.TrackDisposable(disposable);
+            componentHub.TrackDisposable(disposable);
         }
 
         // 统一销毁子视图。
@@ -363,7 +252,7 @@ namespace MVI.FairyGUI.Composed
                 return;
             }
 
-            composition.TrackCleanup(() => ViewHost.Destroy(view));
+            componentHub.TrackCleanup(() => ViewHost.Destroy(view));
         }
 
         // 设置自定义包加载器（例如接入 YooAsset 时注入）。
@@ -421,14 +310,16 @@ namespace MVI.FairyGUI.Composed
         // 创建或获取 FairyGUI 根组件。
         protected virtual GComponent EnsureRoot()
         {
+            if (root != null)
+            {
+                return root;
+            }
+
             if (PreferUIPanel && Panel != null)
             {
                 ConfigurePanel();
-                return Panel.ui;
-            }
-
-            if (root != null)
-            {
+                root = GetPanelRoot();
+                ownsRoot = false;
                 return root;
             }
 
@@ -438,13 +329,24 @@ namespace MVI.FairyGUI.Composed
                 return null;
             }
 
-            root = ViewHost.Load(typeof(GComponent), $"{PackageName}/{ComponentName}") as GComponent;
+            root = CreateRoot();
+            ownsRoot = root != null;
             if (root != null && AddToGRoot)
             {
                 ViewHost.Attach(root, null);
             }
 
             return root;
+        }
+
+        protected virtual GComponent GetPanelRoot()
+        {
+            return Panel.ui;
+        }
+
+        protected virtual GComponent CreateRoot()
+        {
+            return ViewHost.Load<GComponent>($"{PackageName}/{ComponentName}");
         }
 
         // 同步 Inspector 配置到 UIPanel（如果已有配置则保持不动）。
@@ -474,42 +376,44 @@ namespace MVI.FairyGUI.Composed
             }
             viewCts.Dispose();
 
-            composition.Dispose();
+            componentHub.Dispose();
 
-            if (Panel == null && root != null)
+            if (ownsRoot && root != null)
             {
                 ViewHost.Destroy(root);
-                root = null;
             }
+
+            root = null;
+            ownsRoot = false;
         }
 
-        private static Func<object, object, bool> WrapPropsComparer<TProps>(Func<TProps, TProps, bool> comparer)
-        {
-            return (previous, next) =>
-            {
-                if (ReferenceEquals(previous, next))
-                {
-                    return true;
-                }
-
-                if (previous == null || next == null)
-                {
-                    return false;
-                }
-
-                if (previous is TProps prevProps && next is TProps nextProps)
-                {
-                    return comparer(prevProps, nextProps);
-                }
-
-                return Equals(previous, next);
-            };
-        }
-
-        private void OnRuntimeComponentEventRaised(ComponentEvent componentEvent)
+        private void OnHubComponentEventRaised(ComponentEvent componentEvent)
         {
             ComponentEventRaised?.Invoke(componentEvent);
             OnComponentEvent(componentEvent);
+        }
+
+        // FairyGUI 专用 CompositionBuilder：视图由外部传入（不需 resourcePath）。
+        // 链式返回的 ComponentBuilder 来自共享 ComposableComponentHub。
+        protected sealed class CompositionBuilder
+        {
+            private readonly ComposedFairyViewBase owner;
+
+            public CompositionBuilder(ComposedFairyViewBase owner)
+            {
+                this.owner = owner;
+            }
+
+            // 声明式注册组件，返回链式 builder。
+            public ComposableComponentBuilder<TView, TViewModel> Component<TView, TViewModel>(
+                string componentId,
+                TView view,
+                TViewModel viewModel)
+                where TView : class, IFairyView
+            {
+                owner.RegisterComponent<TView, TViewModel>(componentId, view, viewModel);
+                return new ComposableComponentBuilder<TView, TViewModel>(owner.componentHub, componentId, viewModel);
+            }
         }
 
         // 默认的 Resources 包加载器（与 FairyGUI Demo 一致）。

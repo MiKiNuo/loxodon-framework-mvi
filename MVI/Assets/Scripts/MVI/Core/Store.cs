@@ -8,7 +8,7 @@ using R3;
 namespace MVI
 {
     // Store：负责处理 Intent、生成 Result，并通过 Reducer 产出新 State。
-    public abstract class Store : IDisposable
+    public abstract partial class Store : IDisposable
     {
         private readonly Subject<IState> _stateSubject = new();
         private readonly Subject<IntentEnvelope> _intentSubject = new();
@@ -16,12 +16,12 @@ namespace MVI
         private readonly Subject<MviErrorEffect> _errorSubject = new();
         private readonly CompositeDisposable _disposables = new();
         private readonly CancellationTokenSource _storeCts = new();
-        private readonly List<IStoreMiddleware> _middlewares = new();
+        private readonly CancellationToken _lifetimeCancellationToken;
+        private readonly IntentExecutor _intentExecutor;
         private readonly Dictionary<Type, IntentProcessingPolicy> _intentPolicies = new();
         private readonly StateHistoryStore _history = new();
         private StorePersistenceCoordinator _persistenceCoordinator;
-        private readonly object _middlewareSyncRoot = new();
-        private long _middlewareCorrelationSequence;
+
         private IState _currentState;
         private bool _isDisposed;
 
@@ -65,12 +65,18 @@ namespace MVI
 
         protected Store()
         {
+            _lifetimeCancellationToken = _storeCts.Token;
+            _intentExecutor = new IntentExecutor(this);
             State = _stateSubject.ToReadOnlyReactiveProperty();
             ApplyProfileDefaults();
-            ConfigureMiddlewares(_middlewares);
+            ConfigureMiddlewares(_intentExecutor.Middlewares);
             ApplyProfileMiddlewares();
             ConfigureIntentProcessingPolicies(_intentPolicies);
             ApplyProfileIntentPolicies();
+            if (StateType != null)
+            {
+                StateTypeRegistry.Shared.Register(StateType);
+            }
             _persistenceCoordinator = CreatePersistenceCoordinator();
             if (!TryRestorePersistedState())
             {
@@ -127,11 +133,19 @@ namespace MVI
         // 持久化键（默认使用完整类型名）。
         protected virtual string PersistenceKey => GetType().FullName;
 
+        // 在首次恢复前准备默认注册器；非泛型 Store 可声明自己的状态类型。
+        protected virtual Type StateType => null;
+
         // 持久化状态迁移钩子（用于版本升级）。
         protected virtual IState MigratePersistedState(IState persistedState)
         {
             return persistedState;
         }
+
+        /// <summary>
+        /// DevTools 接入点：默认走 <see cref="MviDevToolsHost.Shared"/>，业务可在子类覆写以切换为 <see cref="NullMviDevToolsHost"/> 或自定义抓取器。
+        /// </summary>
+        protected virtual IMviDevToolsHost DevToolsHost => MviDevToolsHost.Shared;
 
         private void ApplyProfileDefaults()
         {
@@ -141,19 +155,21 @@ namespace MVI
                 return;
             }
 
+            // 配置项全部走 DevToolsHost 契约，Store 不再直接写 MviDevTools 静态字段。
+            var host = DevToolsHost;
             if (profile.DevToolsEnabled.HasValue)
             {
-                MviDevTools.Enabled = profile.DevToolsEnabled.Value;
+                host.Enabled = profile.DevToolsEnabled.Value;
             }
 
             if (profile.DevToolsMaxEventsPerStore.HasValue)
             {
-                MviDevTools.MaxEventsPerStore = Math.Max(1, profile.DevToolsMaxEventsPerStore.Value);
+                host.MaxEventsPerStore = Math.Max(1, profile.DevToolsMaxEventsPerStore.Value);
             }
 
             if (profile.DevToolsSamplingOptions != null)
             {
-                MviDevTools.SamplingOptions = profile.DevToolsSamplingOptions;
+                host.SamplingOptions = profile.DevToolsSamplingOptions;
             }
         }
 
@@ -170,7 +186,7 @@ namespace MVI
                 var middleware = profile.Middlewares[i];
                 if (middleware != null)
                 {
-                    _middlewares.Add(middleware);
+                    _intentExecutor.UseMiddleware(middleware);
                 }
             }
         }
@@ -197,15 +213,7 @@ namespace MVI
         // 运行时注册中间件。
         public void UseMiddleware(IStoreMiddleware middleware)
         {
-            if (middleware == null)
-            {
-                return;
-            }
-
-            lock (_middlewareSyncRoot)
-            {
-                _middlewares.Add(middleware);
-            }
+            _intentExecutor.UseMiddleware(middleware);
         }
 
         // 初始化状态（可覆写）。
@@ -234,13 +242,13 @@ namespace MVI
         // DevTools：获取当前 Store 时间线快照。
         public IReadOnlyList<MviTimelineEvent> GetTimelineSnapshot()
         {
-            return MviDevTools.GetTimelineSnapshot(this);
+            return DevToolsHost.GetTimelineSnapshot(this);
         }
 
         // DevTools：清空当前 Store 时间线。
         public void ClearTimeline()
         {
-            MviDevTools.Clear(this);
+            DevToolsHost.Clear(this);
         }
 
         // DevTools：重放时间线中的 Intent（顺序执行）。
@@ -251,7 +259,10 @@ namespace MVI
                 return 0;
             }
 
-            var timeline = MviDevTools.GetTimelineSnapshot(this);
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetimeCancellationToken);
+            var replayCancellationToken = linkedCts.Token;
+
+            var timeline = DevToolsHost.GetTimelineSnapshot(this);
             if (timeline == null || timeline.Count == 0)
             {
                 return 0;
@@ -260,7 +271,7 @@ namespace MVI
             var replayed = 0;
             for (var i = 0; i < timeline.Count; i++)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                replayCancellationToken.ThrowIfCancellationRequested();
 
                 var entry = timeline[i];
                 if (entry.Kind != MviTimelineEventKind.Intent || entry.Payload is not IIntent intent)
@@ -268,7 +279,7 @@ namespace MVI
                     continue;
                 }
 
-                var result = await ExecuteIntentWithStrategyAsync(intent, cancellationToken, MviErrorPhase.Replay);
+                var result = await _intentExecutor.ExecuteAsync(intent, replayCancellationToken, MviErrorPhase.Replay);
                 if (result == null)
                 {
                     continue;
@@ -278,11 +289,11 @@ namespace MVI
                 {
                     Reduce(result);
                     replayed++;
-                    MviDevTools.Track(this, MviTimelineEventKind.Replay, intent, $"replay:{intent.GetType().Name}");
+                    DevToolsHost.Track(this, MviTimelineEventKind.Replay, intent, $"replay:{intent.GetType().Name}");
                 }
                 catch (Exception ex)
                 {
-                    HandleNonIntentError(ex, MviErrorPhase.Reducing);
+                    await HandleNonIntentErrorAsync(ex, MviErrorPhase.Reducing, replayCancellationToken);
                 }
             }
 
@@ -315,7 +326,7 @@ namespace MVI
                 return false;
             }
 
-            var timeline = MviDevTools.GetTimelineSnapshot(this);
+            var timeline = DevToolsHost.GetTimelineSnapshot(this);
             if (timeline == null || timeline.Count == 0)
             {
                 return false;
@@ -394,8 +405,8 @@ namespace MVI
 
         private async ValueTask<IMviResult> ProcessIntentEnvelopeAsync(IntentEnvelope envelope, CancellationToken ct = default)
         {
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, envelope.CancellationToken, _storeCts.Token);
-            return await ExecuteIntentWithStrategyAsync(envelope.Intent, linkedCts.Token, MviErrorPhase.IntentProcessing);
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, envelope.CancellationToken, _lifetimeCancellationToken);
+            return await _intentExecutor.ExecuteAsync(envelope.Intent, linkedCts.Token, MviErrorPhase.IntentProcessing);
         }
 
         // 主动更新状态（通常由 Reducer 调用）。
@@ -413,7 +424,7 @@ namespace MVI
             }
 
             _effectSubject.OnNext(effect);
-            MviDevTools.Track(this, MviTimelineEventKind.Effect, effect);
+            DevToolsHost.Track(this, MviTimelineEventKind.Effect, effect);
             if (MviDiagnostics.Enabled)
             {
                 MviDiagnostics.Trace($"[Store:{GetType().Name}] EmitEffect: {effect.GetType().Name}");
@@ -428,7 +439,7 @@ namespace MVI
                 return;
             }
 
-            MviDevTools.Track(this, MviTimelineEventKind.Intent, intent);
+            DevToolsHost.Track(this, MviTimelineEventKind.Intent, intent);
             _intentSubject.OnNext(new IntentEnvelope(intent, cancellationToken));
             if (MviDiagnostics.Enabled)
             {
@@ -495,7 +506,7 @@ namespace MVI
             var error = new MviErrorEffect(ex, GetType().Name);
             _errorSubject.OnNext(error);
             var traceNote = BuildErrorTraceNote(ex, decision);
-            MviDevTools.Track(this, MviTimelineEventKind.Error, error, traceNote);
+            DevToolsHost.Track(this, MviTimelineEventKind.Error, error, traceNote);
             EmitEffect(error);
             if (MviDiagnostics.Enabled)
             {
@@ -511,30 +522,6 @@ namespace MVI
             }
 
             return $"rule={decision.Trace.RuleId},priority={decision.Trace.Priority},phase={decision.Trace.Phase},attempt={decision.Trace.Attempt},matched={decision.Trace.IsMatched},note={decision.Trace.Note}";
-        }
-
-        private void TrackMiddlewareTrace(
-            string correlationId,
-            int attempt,
-            StoreMiddlewareStage stage,
-            IStoreMiddleware middleware = null,
-            string message = null,
-            Exception exception = null)
-        {
-            if (string.IsNullOrWhiteSpace(correlationId))
-            {
-                return;
-            }
-
-            var trace = new MviMiddlewareTraceEvent(
-                correlationId: correlationId,
-                attempt: attempt,
-                stage: stage,
-                middlewareType: middleware?.GetType().Name,
-                message: message,
-                exceptionType: exception?.GetType().Name,
-                exceptionMessage: exception?.Message);
-            MviDevTools.Track(this, MviTimelineEventKind.Middleware, trace, message);
         }
 
         protected void SetInitialState(IState state)
@@ -553,182 +540,6 @@ namespace MVI
             if (initialState != null)
             {
                 SetInitialState(initialState);
-            }
-        }
-
-        private async ValueTask<IMviResult> ExecuteIntentWithStrategyAsync(IIntent intent, CancellationToken cancellationToken, MviErrorPhase phase)
-        {
-            if (intent == null)
-            {
-                return null;
-            }
-
-            var attempt = 0;
-            while (true)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                try
-                {
-                    var result = await InvokeMiddlewarePipelineAsync(intent, cancellationToken, attempt);
-                    if (result != null)
-                    {
-                        MviDevTools.Track(this, MviTimelineEventKind.Result, result);
-                    }
-
-                    return result;
-                }
-                catch (OperationCanceledException)
-                {
-                    return null;
-                }
-                catch (Exception ex)
-                {
-                    var decision = await ResolveErrorDecisionAsync(ex, intent, attempt, phase, cancellationToken);
-                    if (decision.EmitError)
-                    {
-                        OnProcessError(ex, decision);
-                    }
-
-                    if (decision.FallbackResult != null)
-                    {
-                        MviDevTools.Track(this, MviTimelineEventKind.Result, decision.FallbackResult, "fallback");
-                        return decision.FallbackResult;
-                    }
-
-                    if (attempt < decision.RetryCount)
-                    {
-                        attempt++;
-                        if (decision.RetryDelay > TimeSpan.Zero)
-                        {
-                            await Task.Delay(decision.RetryDelay, cancellationToken);
-                        }
-
-                        continue;
-                    }
-
-                    if (decision.Rethrow)
-                    {
-                        throw;
-                    }
-
-                    return null;
-                }
-            }
-        }
-
-        private async ValueTask<IMviResult> InvokeMiddlewarePipelineAsync(IIntent intent, CancellationToken cancellationToken, int attempt)
-        {
-            if (intent == null)
-            {
-                return default;
-            }
-
-            IStoreMiddleware[] middlewares = null;
-            var hasMiddlewares = false;
-            lock (_middlewareSyncRoot)
-            {
-                if (_middlewares.Count > 0)
-                {
-                    hasMiddlewares = true;
-                    middlewares = _middlewares.ToArray();
-                }
-            }
-
-            if (!hasMiddlewares)
-            {
-                return await ProcessIntentAsync(intent, cancellationToken);
-            }
-
-            var correlationId = $"{GetType().Name}:{Interlocked.Increment(ref _middlewareCorrelationSequence)}";
-            var context = StoreMiddlewareContextPool.Rent(this, intent, cancellationToken, attempt, correlationId);
-
-            try
-            {
-                context.Stage = StoreMiddlewareStage.BeforeIntent;
-                TrackMiddlewareTrace(correlationId, attempt, context.Stage, message: "pipeline-start");
-                for (var i = 0; i < middlewares.Length; i++)
-                {
-                    if (middlewares[i] is IStoreMiddlewareV2 middlewareV2)
-                    {
-                        TrackMiddlewareTrace(correlationId, attempt, context.Stage, middlewares[i], "before-hook");
-                        await middlewareV2.OnBeforeIntentAsync(context);
-                    }
-                }
-
-                var index = -1;
-                context.Stage = StoreMiddlewareStage.InvokeCore;
-                TrackMiddlewareTrace(correlationId, attempt, context.Stage, message: "core-start");
-
-                ValueTask<IMviResult> Next(StoreMiddlewareContext current)
-                {
-                    index++;
-                    if (index >= middlewares.Length)
-                    {
-                        if (current.Intent == null)
-                        {
-                            return default;
-                        }
-
-                        return ProcessIntentAsync(current.Intent, current.CancellationToken);
-                    }
-
-                    var middleware = middlewares[index];
-                    if (middleware == null)
-                    {
-                        return Next(current);
-                    }
-
-                    return middleware.InvokeAsync(current, Next);
-                }
-
-                var result = await Next(context);
-                TrackMiddlewareTrace(correlationId, attempt, context.Stage, message: "core-complete");
-
-                context.Stage = StoreMiddlewareStage.AfterResult;
-                for (var i = 0; i < middlewares.Length; i++)
-                {
-                    if (middlewares[i] is IStoreMiddlewareV2 middlewareV2)
-                    {
-                        TrackMiddlewareTrace(correlationId, attempt, context.Stage, middlewares[i], "after-hook");
-                        await middlewareV2.OnAfterResultAsync(context, result);
-                    }
-                }
-
-                TrackMiddlewareTrace(correlationId, attempt, context.Stage, message: "pipeline-complete");
-
-                return result;
-            }
-            catch (Exception ex)
-            {
-                context.Stage = StoreMiddlewareStage.OnError;
-                TrackMiddlewareTrace(correlationId, attempt, context.Stage, message: "pipeline-error", exception: ex);
-                for (var i = 0; i < middlewares.Length; i++)
-                {
-                    if (middlewares[i] is not IStoreMiddlewareV2 middlewareV2)
-                    {
-                        continue;
-                    }
-
-                    try
-                    {
-                        TrackMiddlewareTrace(correlationId, attempt, context.Stage, middlewares[i], "error-hook", ex);
-                        await middlewareV2.OnErrorAsync(context, ex);
-                    }
-                    catch (Exception hookException)
-                    {
-                        TrackMiddlewareTrace(correlationId, attempt, context.Stage, middlewares[i], "error-hook-failed", hookException);
-                        if (MviDiagnostics.Enabled)
-                        {
-                            MviDiagnostics.Trace($"[Store:{GetType().Name}] Middleware OnError hook failed: {hookException}");
-                        }
-                    }
-                }
-
-                throw;
-            }
-            finally
-            {
-                StoreMiddlewareContextPool.Return(context);
             }
         }
 
@@ -751,7 +562,7 @@ namespace MVI
                 PersistState(state);
             }
 
-            MviDevTools.Track(this, timelineKind, state, timelineNote);
+            DevToolsHost.Track(this, timelineKind, state, timelineNote);
             if (MviDiagnostics.Enabled)
             {
                 MviDiagnostics.Trace($"[Store:{GetType().Name}] UpdateState -> {state.GetType().Name}");
@@ -800,23 +611,9 @@ namespace MVI
                 var decision = await strategy.DecideAsync(context, cancellationToken);
                 return decision.IsConfigured ? decision : MviErrorDecision.Emit();
             }
-            catch
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                return MviErrorDecision.Emit();
-            }
-        }
-
-        private MviErrorDecision ResolveErrorDecision(Exception ex, IIntent intent, int attempt, MviErrorPhase phase)
-        {
-            var strategy = ErrorStrategy ?? DefaultMviErrorStrategy.Instance;
-            try
-            {
-                var context = new MviErrorContext(this, ex, intent, attempt, phase);
-                var decisionTask = strategy.DecideAsync(context, CancellationToken.None);
-                var decision = decisionTask.IsCompletedSuccessfully
-                    ? decisionTask.Result
-                    : decisionTask.AsTask().GetAwaiter().GetResult();
-                return decision.IsConfigured ? decision : MviErrorDecision.Emit();
+                throw;
             }
             catch
             {
@@ -824,14 +621,14 @@ namespace MVI
             }
         }
 
-        private void HandleNonIntentError(Exception ex, MviErrorPhase phase)
+        private async ValueTask HandleNonIntentErrorAsync(Exception ex, MviErrorPhase phase, CancellationToken cancellationToken)
         {
-            if (ex == null)
+            var decision = await ResolveErrorDecisionAsync(ex, null, 0, phase, cancellationToken);
+            if (_isDisposed || cancellationToken.IsCancellationRequested)
             {
                 return;
             }
 
-            var decision = ResolveErrorDecision(ex, null, 0, phase);
             if (decision.EmitError)
             {
                 OnProcessError(ex, decision);
@@ -840,6 +637,54 @@ namespace MVI
             if (decision.Rethrow)
             {
                 ExceptionDispatchInfo.Capture(ex).Throw();
+            }
+        }
+
+        private void HandleNonIntentError(Exception ex, MviErrorPhase phase)
+        {
+            if (_isDisposed || ex == null)
+            {
+                return;
+            }
+
+            var completion = HandleNonIntentErrorAsync(ex, phase, _lifetimeCancellationToken);
+            if (completion.IsCompleted)
+            {
+                // 只消费已完成的 ValueTask，保留同步策略的原始抛出行为。
+                completion.GetAwaiter().GetResult();
+                return;
+            }
+
+            _ = ObserveDeferredErrorAsync(completion);
+        }
+
+        private async Task ObserveDeferredErrorAsync(ValueTask completion)
+        {
+            try
+            {
+                await completion;
+            }
+            catch (OperationCanceledException) when (_lifetimeCancellationToken.IsCancellationRequested)
+            {
+                // Store 释放后停止交付尚未完成的错误决策。
+            }
+            catch (Exception ex)
+            {
+                if (_isDisposed)
+                {
+                    return;
+                }
+
+                // void 入口的延迟 Rethrow 交付到 R3 的未处理错误通道。
+                // 不改 continuation 的线程，也不让观察器留下未观察的 faulted Task。
+                try
+                {
+                    ObservableSystem.GetUnhandledExceptionHandler().Invoke(ex);
+                }
+                catch (Exception handlerException)
+                {
+                    UnityEngine.Debug.LogException(handlerException);
+                }
             }
         }
 
@@ -876,7 +721,7 @@ namespace MVI
             _disposables.Dispose();
             _storeCts.Dispose();
             _history.Clear();
-            MviDevTools.Detach(this);
+            DevToolsHost.Detach(this);
 
             if (_stateSubject is IDisposable stateDisposable)
             {

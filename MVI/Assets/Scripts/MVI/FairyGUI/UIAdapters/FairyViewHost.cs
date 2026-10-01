@@ -31,9 +31,9 @@ namespace MVI.UIAdapters.FairyGUI
             return _packageLoader.LoadAsync(packagePaths, cancellationToken);
         }
 
-        public object Load(Type viewType, string resourcePath)
+        public TView Load<TView>(string resourcePath) where TView : class
         {
-            if (viewType == null || string.IsNullOrWhiteSpace(resourcePath))
+            if (string.IsNullOrWhiteSpace(resourcePath))
             {
                 return null;
             }
@@ -52,7 +52,7 @@ namespace MVI.UIAdapters.FairyGUI
                 return null;
             }
 
-            return viewType.IsInstanceOfType(component) ? component : null;
+            return component as TView;
         }
 
         public void Attach(object view, object mountPoint)

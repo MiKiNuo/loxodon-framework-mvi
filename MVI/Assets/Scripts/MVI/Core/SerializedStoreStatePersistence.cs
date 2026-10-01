@@ -92,7 +92,19 @@ namespace MVI
     /// </summary>
     public interface IStoreStateMigrator
     {
+        /// <summary>
+        /// 返回迁移结果；无需迁移时可返回 false 并保留 source。
+        /// 未能准备迁移结果时返回 null，持久化层会保留原始快照供配置完成后重试。
+        /// </summary>
         bool TryMigrate(string key, StoreStateSnapshot source, out StoreStateSnapshot migrated);
+    }
+
+    internal sealed class StoreStateLoadConfigurationException : InvalidOperationException
+    {
+        public StoreStateLoadConfigurationException(string message, Exception innerException = null)
+            : base(message, innerException)
+        {
+        }
     }
 
     /// <summary>
@@ -101,7 +113,8 @@ namespace MVI
     public sealed class SerializedStoreStatePersistenceOptions
     {
         /// <summary>
-        /// 加载失败时是否自动清理损坏快照，避免反复读取失败。
+        /// 数据确实损坏时是否自动清理快照，避免反复读取失败。
+        /// 类型未登记、缺少序列化器或迁移未准备好时始终保留原始数据。
         /// </summary>
         public bool ClearCorruptedDataOnLoadFailure { get; set; } = true;
 
@@ -132,6 +145,9 @@ namespace MVI
         private readonly IStoreStateEncryptor _encryptor;
         private readonly IStoreStateMigrator _migrator;
         private readonly SerializedStoreStatePersistenceOptions _options;
+        private readonly HashSet<string> _configurationFailedKeys = new(StringComparer.Ordinal);
+        // ponytail: serialize storage access; use per-key locks if concurrent storage throughput is required.
+        private readonly object _syncRoot = new();
 
         public SerializedStoreStatePersistence(
             IStoreStateStorage storage,
@@ -178,7 +194,25 @@ namespace MVI
 
         public bool TryLoad(string key, out IState state)
         {
+            bool loaded;
+            string failureReason;
+            lock (_syncRoot)
+            {
+                loaded = TryLoadCore(key, out state, out failureReason);
+            }
+
+            if (failureReason != null)
+            {
+                _options.OnLoadFailed?.Invoke(key, failureReason);
+            }
+
+            return loaded;
+        }
+
+        private bool TryLoadCore(string key, out IState state, out string failureReason)
+        {
             state = null;
+            failureReason = null;
             if (string.IsNullOrWhiteSpace(key) || !_storage.TryRead(key, out var bytes) || bytes == null || bytes.Length == 0)
             {
                 return false;
@@ -194,34 +228,73 @@ namespace MVI
                 var snapshot = DeserializeEnvelope(bytes);
                 if (snapshot == null)
                 {
-                    return FailLoad(key, "Invalid envelope.");
+                    return FailLoad(key, "Invalid envelope.", out failureReason);
                 }
 
-                if (_migrator != null && _migrator.TryMigrate(key, snapshot, out var migrated) && migrated != null)
+                if (_migrator != null)
                 {
-                    snapshot = migrated;
+                    try
+                    {
+                        var migrationApplied = _migrator.TryMigrate(key, snapshot, out var migrated);
+                        if (migrated == null)
+                        {
+                            throw new StoreStateLoadConfigurationException("Migration returned no snapshot. Configure the migration before retrying.");
+                        }
+
+                        if (migrationApplied)
+                        {
+                            snapshot = migrated;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new StoreStateLoadConfigurationException($"Snapshot migration failed: {ex.Message}", ex);
+                    }
                 }
 
                 if (string.IsNullOrWhiteSpace(snapshot.SerializerId) || !_serializers.TryGetValue(snapshot.SerializerId, out var serializer))
                 {
-                    return FailLoad(key, $"Serializer not found: {snapshot.SerializerId}");
+                    throw new StoreStateLoadConfigurationException($"Serializer not found: {snapshot.SerializerId}. Configure it before retrying.");
                 }
 
                 state = serializer.Deserialize(snapshot);
                 if (state == null)
                 {
-                    return FailLoad(key, "Serializer returned null state.");
+                    return FailLoad(key, $"Serializer '{snapshot.SerializerId}' returned null state for '{snapshot.StateType}'.", out failureReason);
                 }
 
+                _configurationFailedKeys.Remove(key);
                 return true;
+            }
+            catch (StoreStateLoadConfigurationException ex)
+            {
+                _configurationFailedKeys.Add(key);
+                return FailLoad(key, ex.Message, out failureReason, corruptedData: false);
             }
             catch (Exception ex)
             {
-                return FailLoad(key, ex.Message);
+                return FailLoad(key, ex.Message, out failureReason);
             }
         }
 
+        /// <summary>
+        /// 保存状态。若该 key 曾因配置未准备好而加载失败，在成功 TryLoad 或显式 Clear 前跳过写入，
+        /// 避免 Store 初始化的默认状态覆盖尚未恢复的存档。
+        /// </summary>
         public void Save(string key, IState state)
+        {
+            lock (_syncRoot)
+            {
+                if (key != null && _configurationFailedKeys.Contains(key))
+                {
+                    return;
+                }
+
+                SaveCore(key, state);
+            }
+        }
+
+        private void SaveCore(string key, IState state)
         {
             if (string.IsNullOrWhiteSpace(key) || state == null)
             {
@@ -246,13 +319,17 @@ namespace MVI
 
         public void Clear(string key)
         {
-            _storage.Clear(key);
+            lock (_syncRoot)
+            {
+                _storage.Clear(key);
+                _configurationFailedKeys.Remove(key);
+            }
         }
 
-        private bool FailLoad(string key, string reason)
+        private bool FailLoad(string key, string reason, out string failureReason, bool corruptedData = true)
         {
-            _options.OnLoadFailed?.Invoke(key, reason ?? "unknown");
-            if (_options.ClearCorruptedDataOnLoadFailure)
+            failureReason = reason ?? "unknown";
+            if (corruptedData && _options.ClearCorruptedDataOnLoadFailure)
             {
                 _storage.Clear(key);
             }
@@ -319,8 +396,15 @@ namespace MVI
     }
 
     /// <summary>
-    /// JSON 序列化器（默认建议使用）。
+    /// 使用 Unity JsonUtility 的 JSON 状态序列化器。
     /// </summary>
+    /// <remarks>
+    /// State 应使用标记 Serializable 且符合 Unity 字段序列化规则的类型；数据需位于支持的可序列化字段中。
+    /// 不承诺仅含属性、readonly 字段或通用 record 类型能够完整恢复。
+    /// 类型映射只保存在当前进程。加载已有存档前，应在同一注册器显式登记 State 类型；
+    /// Serialize 时的自动登记不能代替新进程的初始化登记。自定义注册器通过构造参数注入。
+    /// 未登记类型属于配置未准备好，持久化层会保留存档并允许登记后重试。
+    /// </remarks>
     public sealed class JsonStoreStateSerializer : IStoreStateSerializer
     {
         private readonly IStateTypeRegistry _registry;
@@ -365,10 +449,14 @@ namespace MVI
                 return null;
             }
 
-            var stateType = ResolveStateType(snapshot.StateType);
-            if (stateType == null)
+            if (string.IsNullOrWhiteSpace(snapshot.StateType))
             {
                 return null;
+            }
+
+            if (!_registry.TryResolve(snapshot.StateType, out var stateType))
+            {
+                throw new StoreStateLoadConfigurationException($"State type is not registered: {snapshot.StateType}. Register it before retrying.");
             }
 
             var json = Encoding.UTF8.GetString(snapshot.Payload);
@@ -387,13 +475,6 @@ namespace MVI
             }
         }
 
-        /// <summary>
-        /// 通过已注册的 <see cref="IStateTypeRegistry"/> 解析类型别名（仅字典查询，零反射）。
-        /// </summary>
-        private Type ResolveStateType(string name)
-        {
-            return _registry.TryResolve(name, out var resolved) ? resolved : null;
-        }
     }
 
     /// <summary>
@@ -452,6 +533,10 @@ namespace MVI
                 var jsonBytes = compressed ? DecompressBytes(body) : body;
                 var jsonSnapshot = snapshot.With(serializerId: "json-inner", payload: jsonBytes);
                 return _jsonSerializer.Deserialize(jsonSnapshot);
+            }
+            catch (StoreStateLoadConfigurationException)
+            {
+                throw;
             }
             catch
             {
@@ -1087,7 +1172,7 @@ namespace MVI
                 var next = step(migrated);
                 if (next == null)
                 {
-                    break;
+                    throw new StoreStateLoadConfigurationException($"Migration step '{migrated.SerializerId}' from schema {migrated.SchemaVersion} returned no snapshot.");
                 }
 
                 migrated = next;

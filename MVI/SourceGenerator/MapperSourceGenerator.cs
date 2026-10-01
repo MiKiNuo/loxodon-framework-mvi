@@ -176,7 +176,7 @@ namespace SourceGenerator
                 var alias = GetMappedName(property, mapAttribute);
                 if (!string.IsNullOrWhiteSpace(alias))
                 {
-                    TryAddProperty(properties, alias, property, type, diagnosticsEnabled, reportDiagnostic);
+                    TryAddProperty(properties, alias!, property, type, diagnosticsEnabled, reportDiagnostic);
                 }
             }
 
@@ -201,23 +201,7 @@ namespace SourceGenerator
                 if (!predicate(property))
                     continue;
 
-                if (!properties.TryAdd(property.Name, property))
-                {
-                    if (diagnosticsEnabled && reportDiagnostic is not null)
-                    {
-                        var existing = properties[property.Name];
-                        if (!string.Equals(existing.Name, property.Name, StringComparison.Ordinal))
-                        {
-                            var location = property.Locations.FirstOrDefault();
-                            reportDiagnostic(Diagnostic.Create(
-                                CaseInsensitiveConflictDescriptor,
-                                location,
-                                type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-                                existing.Name,
-                                property.Name));
-                        }
-                    }
-                }
+                TryAddProperty(properties, property.Name, property, type, diagnosticsEnabled, reportDiagnostic);
             }
 
             map = new PropertyMap(properties);
@@ -302,11 +286,10 @@ namespace SourceGenerator
                 return;
             }
 
-            if (!properties.TryAdd(name, property))
+            if (properties.TryGetValue(name, out var existing))
             {
                 if (diagnosticsEnabled && reportDiagnostic is not null)
                 {
-                    var existing = properties[name];
                     if (!SymbolEqualityComparer.Default.Equals(existing, property)
                         && !string.Equals(existing.Name, name, StringComparison.Ordinal))
                     {
@@ -319,6 +302,10 @@ namespace SourceGenerator
                             property.Name));
                     }
                 }
+            }
+            else
+            {
+                properties.Add(name, property);
             }
         }
 
@@ -405,12 +392,8 @@ namespace SourceGenerator
 
         private static bool IsDiagnosticsEnabled(Compilation compilation)
         {
-            if (compilation is CSharpCompilation csharp)
-            {
-                return csharp.Options.PreprocessorSymbolNames.Contains(DiagnosticsSymbol);
-            }
-
-            return false;
+            return compilation.SyntaxTrees.Any(tree => tree.Options is CSharpParseOptions options
+                && options.PreprocessorSymbolNames.Contains(DiagnosticsSymbol));
         }
 
         private static string GenerateSourceText(IReadOnlyList<TypeMapping> mappings)
@@ -424,10 +407,19 @@ namespace SourceGenerator
             sb.AppendLine("namespace MVI.Generated");
             sb.AppendLine("{");
             sb.AppendLine("    /// <summary>");
-            sb.AppendLine("    /// 编译期状态映射器：根据 IsUpdateNewState 决定增量更新或全量更新。\");
+            sb.AppendLine("    /// 编译期状态映射器：根据 IsUpdateNewState 决定增量更新或全量更新。");
             sb.AppendLine("    /// </summary>");
             sb.AppendLine("    internal static class GeneratedStateMapper");
             sb.AppendLine("    {");
+            sb.AppendLine("#if UNITY_EDITOR");
+            sb.AppendLine("        [global::UnityEditor.InitializeOnLoadMethod]");
+            sb.AppendLine("#endif");
+            sb.AppendLine("        [global::UnityEngine.RuntimeInitializeOnLoadMethod(global::UnityEngine.RuntimeInitializeLoadType.AfterAssembliesLoaded)]");
+            sb.AppendLine("        private static void RegisterMapper()");
+            sb.AppendLine("        {");
+            sb.AppendLine("            global::MVI.MviStateMapper.RegisterMapper(TryMap);");
+            sb.AppendLine("        }");
+            sb.AppendLine();
             sb.AppendLine("        public static bool TryMap(global::MVI.IState state, global::MVI.MviViewModel viewModel)");
             sb.AppendLine("        {");
             sb.AppendLine("            if (state is null || viewModel is null)");
@@ -459,7 +451,7 @@ namespace SourceGenerator
                 var vmTypeName = map.ViewModelType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
 
                 sb.AppendLine("        /// <summary>");
-                sb.AppendLine($"        /// 将 {map.StateType.Name} 的公共属性复制到 {map.ViewModelType.Name}。\");
+                sb.AppendLine($"        /// 将 {map.StateType.Name} 的公共属性复制到 {map.ViewModelType.Name}。");
                 sb.AppendLine("        /// </summary>");
                 sb.AppendLine($"        private static void Map_{map.StateIdentifier}_{map.ViewModelIdentifier}({stateTypeName} state, {vmTypeName} viewModel)");
                 sb.AppendLine("        {");

@@ -34,6 +34,7 @@ namespace MVI.FairyGUI
         private readonly CancellationTokenSource _viewCts = new();
         // 运行时创建的根组件（非 UIPanel 模式）。
         private GComponent _root;
+        private bool _ownsRoot;
         // 视图是否已就绪。
         private bool _isViewReady;
         // 是否已经完成 Bind（防止重复绑定）。
@@ -197,16 +198,17 @@ namespace MVI.FairyGUI
         // 创建或获取 FairyGUI 根组件。
         protected virtual GComponent EnsureRoot()
         {
+            if (_root != null)
+            {
+                return _root;
+            }
+
             if (PreferUIPanel && Panel != null)
             {
                 // UIPanel 模式：依赖 UIPanel 来创建 UI 组件树。
                 ConfigurePanel();
-                _root = Panel.ui;
-                return _root;
-            }
-
-            if (_root != null)
-            {
+                _root = GetPanelRoot();
+                _ownsRoot = false;
                 return _root;
             }
 
@@ -217,13 +219,24 @@ namespace MVI.FairyGUI
             }
 
             // GRoot 模式：由 ViewHost 创建并按配置挂载到舞台。
-            _root = ViewHost.Load(typeof(GComponent), $"{PackageName}/{ComponentName}") as GComponent;
+            _root = CreateRoot();
+            _ownsRoot = _root != null;
             if (_root != null && AddToGRoot)
             {
                 ViewHost.Attach(_root, null);
             }
 
             return _root;
+        }
+
+        protected virtual GComponent GetPanelRoot()
+        {
+            return Panel.ui;
+        }
+
+        protected virtual GComponent CreateRoot()
+        {
+            return ViewHost.Load<GComponent>($"{PackageName}/{ComponentName}");
         }
 
         // 同步 Inspector 配置到 UIPanel（如果已有配置则保持不动）。
@@ -257,12 +270,14 @@ namespace MVI.FairyGUI
             }
             _viewCts.Dispose();
 
-            // 非 UIPanel 模式下，主动移除并销毁根组件。
-            if (Panel == null && _root != null)
+            // 只释放本 View 创建的根组件，借用的根组件由 UIPanel 释放。
+            if (_ownsRoot && _root != null)
             {
                 ViewHost.Destroy(_root);
-                _root = null;
             }
+
+            _root = null;
+            _ownsRoot = false;
 
             _isViewReady = false;
             _pendingState = null;

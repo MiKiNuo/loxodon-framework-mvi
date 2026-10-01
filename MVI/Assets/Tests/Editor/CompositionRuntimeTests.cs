@@ -70,23 +70,63 @@ namespace MVI.Tests
         }
 
         [Test]
-        public void EventRoute_ShouldDispatchByRuntimeEvent()
+        public void EventRoute_ShouldDispatchExactlyOnce()
         {
             var runtime = new CompositionRuntime();
-            runtime.ComponentEventRaised += runtime.DispatchEventRoutes;
+            var notificationCount = 0;
+            runtime.ComponentEventRaised += _ => notificationCount++;
 
-            var called = false;
+            var callCount = 0;
             runtime.AddEventRoute("Counter", "CountChanged", typeof(int), payload =>
             {
                 if (payload is int value && value == 7)
                 {
-                    called = true;
+                    callCount++;
                 }
             });
 
             runtime.EmitComponentEvent("Counter", "CountChanged", 7);
 
-            Assert.IsTrue(called);
+            Assert.AreEqual(1, notificationCount);
+            Assert.AreEqual(1, callCount);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void CustomPropsComparer_ShouldUseTheSameRulesForBothConfigurationPaths(bool setAfterRegistration)
+        {
+            using var runtime = new CompositionRuntime();
+            var viewModel = new TestViewModel();
+            Func<TestProps, TestProps, bool> comparer = (previous, next) => previous.Value % 10 == next.Value % 10;
+
+            runtime.TryRegisterComponent("Counter", new object(), viewModel,
+                setAfterRegistration ? null : ComposableComponentHub.WrapPropsComparer(comparer));
+            if (setAfterRegistration)
+            {
+                runtime.SetPropsComparer("Counter", comparer);
+            }
+
+            runtime.ApplyProps("Counter", new TestProps(1));
+            runtime.ApplyProps("Counter", new TestProps(11));
+            runtime.ApplyProps("Counter", new TestProps(2));
+
+            Assert.AreEqual(2, viewModel.ApplyCount);
+        }
+
+        [Test]
+        public void PropsComparerWrapper_ShouldPreserveReferenceNullAndFallbackRules()
+        {
+            var wrapped = ComposableComponentHub.WrapPropsComparer<TestProps>((previous, next) => previous.Value == next.Value);
+            var props = new TestProps(1);
+
+            Assert.IsTrue(wrapped(props, props));
+            Assert.IsTrue(wrapped(null, null));
+            Assert.IsFalse(wrapped(null, props));
+            Assert.IsFalse(wrapped(props, null));
+            Assert.IsTrue(wrapped(props, new TestProps(1)));
+            Assert.IsFalse(wrapped(props, new TestProps(2)));
+            Assert.IsTrue(wrapped(1, 1));
+            Assert.IsFalse(wrapped(1, 2));
         }
 
         [Test]

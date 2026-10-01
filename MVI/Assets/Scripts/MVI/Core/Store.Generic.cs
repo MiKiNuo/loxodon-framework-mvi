@@ -1,3 +1,4 @@
+using System;
 using System.Threading;
 using R3;
 
@@ -20,6 +21,8 @@ namespace MVI
 
         // 初始状态（可覆写）。
         protected virtual TState InitialState => null;
+
+        protected override Type StateType => typeof(TState);
 
         protected override IState CreateInitialState()
         {

@@ -199,6 +199,8 @@ namespace MVI.Composition
         {
             var componentEvent = new ComponentEvent(componentId, eventName, payload);
             ComponentEventRaised?.Invoke(componentEvent);
+            // 同时把事件分发给已注册的本地路由，避免宿主再额外调用 DispatchEventRoutes。
+            DispatchEventRoutes(componentEvent);
         }
 
         public void DispatchEventRoutes(ComponentEvent componentEvent)
@@ -279,7 +281,7 @@ namespace MVI.Composition
             ComponentEventRaised = null;
         }
 
-        private static Func<object, object, bool> WrapPropsComparer<TProps>(Func<TProps, TProps, bool> comparer)
+        internal static Func<object, object, bool> WrapPropsComparer<TProps>(Func<TProps, TProps, bool> comparer)
         {
             return (previous, next) =>
             {
