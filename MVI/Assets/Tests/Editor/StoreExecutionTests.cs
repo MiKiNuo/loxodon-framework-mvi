@@ -10,7 +10,9 @@ using R3;
 
 namespace MVI.Tests
 {
+#if !UNITY_5_3_OR_NEWER
     [NonParallelizable]
+#endif
     public class StoreExecutionTests
     {
         private IStoreStatePersistence _previousPersistence;

@@ -1,3 +1,11 @@
 ﻿<Solution>
+  <Project Path="FairyGUI.csproj" />
+  <Project Path="MVI.Core.csproj" />
+  <Project Path="MVI.Tests.csproj" />
+  <Project Path="MVI.FairyGUI.csproj" />
+  <Project Path="MVI.Examples.csproj" />
+  <Project Path="FairyGUI-Editor.csproj" />
+  <Project Path="MVI.Loxodon.csproj" />
   <Project Path="Assembly-CSharp.csproj" />
+  <Project Path="MVI.Editor.csproj" />
 </Solution>

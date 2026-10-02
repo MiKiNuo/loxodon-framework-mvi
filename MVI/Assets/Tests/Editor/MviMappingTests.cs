@@ -5,7 +5,9 @@ using UnityEngine.TestTools;
 
 namespace MVI.Tests
 {
+#if !UNITY_5_3_OR_NEWER
     [NonParallelizable]
+#endif
     public sealed class MviMappingTests
     {
         private sealed class TestState : IState
