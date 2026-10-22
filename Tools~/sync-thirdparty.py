@@ -28,7 +28,7 @@ import zipfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PACKAGE_ROOT = REPO_ROOT / "MVI" / "Assets" / "Scripts" / "MVI"
+PACKAGE_ROOT = REPO_ROOT
 THIRD_PARTY = PACKAGE_ROOT / "ThirdParty"
 
 FAIRYGUI_URL = "https://codeload.github.com/fairygui/FairyGUI-unity/zip/refs/heads/{ref}"
