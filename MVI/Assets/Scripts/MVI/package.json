@@ -1,9 +1,9 @@
 {
   "name": "com.mikinuo.loxodon-framework-mvi",
   "displayName": "Loxodon Framework MVI",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "unity": "2021.3",
-  "description": "MVI framework for Unity with Store middleware, persistence, DevTools, composition runtime, and adapters for UGUI and FairyGUI.",
+  "description": "Self-contained MVI framework for Unity with Store middleware, persistence, DevTools, composition runtime, and adapters for UGUI and FairyGUI. Bundles R3 runtime and Loxodon Framework runtime.",
   "keywords": [
     "mvi",
     "unity",

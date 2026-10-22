@@ -2,14 +2,15 @@
     "name": "MVI.Loxodon",
     "references": [
         "MVI.Core",
-        "R3.Unity",
         "Loxodon.Framework"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
-    "overrideReferences": false,
-    "precompiledReferences": [],
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "R3.dll"
+    ],
     "autoReferenced": true,
     "defineConstraints": [],
     "versionDefines": []

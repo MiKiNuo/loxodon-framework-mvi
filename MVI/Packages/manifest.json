@@ -1,7 +1,5 @@
 {
   "dependencies": {
-    "com.cysharp.r3": "https://github.com/Cysharp/R3.git?path=src/R3.Unity/Assets/R3.Unity",
-    "com.github-glitchenzo.nugetforunity": "https://github.com/GlitchEnzo/NuGetForUnity.git?path=/src/NuGetForUnity",
     "com.unity.collab-proxy": "2.13.6",
     "com.unity.feature.2d": "2.0.2",
     "com.unity.ide.rider": "3.0.40",
@@ -12,7 +10,6 @@
     "com.unity.test-framework": "1.6.0",
     "com.unity.ugui": "2.0.0",
     "com.unity.visualscripting": "1.9.12",
-    "com.vovgou.loxodon-framework": "https://github.com/vovgou/loxodon-framework.git?path=Loxodon.Framework/Assets/LoxodonFramework",
     "com.unity.modules.accessibility": "1.0.0",
     "com.unity.modules.adaptiveperformance": "1.0.0",
     "com.unity.modules.ai": "1.0.0",

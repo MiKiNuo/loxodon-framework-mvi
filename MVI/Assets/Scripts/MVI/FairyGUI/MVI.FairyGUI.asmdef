@@ -4,14 +4,15 @@
         "MVI.Core",
         "MVI.Loxodon",
         "Loxodon.Framework",
-        "R3.Unity",
         "FairyGUI"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
-    "overrideReferences": false,
-    "precompiledReferences": [],
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "R3.dll"
+    ],
     "autoReferenced": true,
     "defineConstraints": [],
     "versionDefines": []
