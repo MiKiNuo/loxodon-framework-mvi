@@ -2,7 +2,8 @@
     "name": "MVI.Loxodon",
     "references": [
         "MVI.Core",
-        "Loxodon.Framework"
+        "Loxodon.Framework",
+        "R3.Unity"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

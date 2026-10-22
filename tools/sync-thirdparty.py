@@ -62,6 +62,12 @@ R3_NUGET = [
 R3_TARGET = "R3/Plugins"
 R3_MARKER = "R3/Plugins/R3.dll"
 
+R3_UPM_URL = "https://codeload.github.com/Cysharp/R3/zip/refs/tags/{ref}"
+R3_UPM_PREFIX = "R3-{ref}/src/R3.Unity/Assets/R3.Unity/Runtime/"
+R3_UPM_TARGET = "R3/Unity"
+R3_UPM_EXCLUDE = ("External/", "External.meta")
+R3_UPM_MARKER = "R3/Unity/ObserveOnExtensions.cs"
+
 
 def download(url: str, timeout: int = 180) -> bytes:
     print(f"  下载 {url}")
@@ -213,8 +219,8 @@ def sync_loxodon(ref: str) -> None:
     print(f"  完成，共 {count} 个文件")
 
 
-def sync_r3(r3_version: str | None) -> None:
-    print(f"[R3] version={r3_version or '默认'}")
+def sync_r3(r3_version: str | None, upm_version: str) -> None:
+    print(f"[R3] nuget={r3_version or '默认'} upm={upm_version}")
     target = THIRD_PARTY / R3_TARGET
     target.mkdir(parents=True, exist_ok=True)
     for package, version, member in R3_NUGET:
@@ -228,6 +234,32 @@ def sync_r3(r3_version: str | None) -> None:
         print(f"  {name} <- {current}")
     if not (THIRD_PARTY / R3_MARKER).exists():
         print("  校验失败：R3.dll 未写入")
+        return
+
+    payload = download(R3_UPM_URL.format(ref=upm_version))
+    prefix = R3_UPM_PREFIX.format(ref=upm_version)
+    staging = Path(tempfile.mkdtemp(prefix="mvi-sync-r3-"))
+    count = 0
+    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        for member in archive.namelist():
+            if not member.startswith(prefix) or member.endswith("/"):
+                continue
+            relative = member[len(prefix):]
+            if any(relative.startswith(item) or relative == item for item in R3_UPM_EXCLUDE):
+                continue
+            destination = staging / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(member) as source, open(destination, "wb") as output:
+                shutil.copyfileobj(source, output)
+            count += 1
+    if not (staging / "ObserveOnExtensions.cs").exists():
+        print("  校验失败：R3.Unity 适配层结构不符，未修改包内容")
+        cleanup(staging)
+        return
+    stale, protected = copy_over(staging, THIRD_PARTY / R3_UPM_TARGET)
+    print_stale([Path(R3_UPM_TARGET) / path for path in stale], [Path(R3_UPM_TARGET) / path for path in protected])
+    cleanup(staging)
+    print(f"  R3.Unity 适配层 {count} 个文件")
 
 
 def check_sources(ref_fairygui: str, ref_loxodon: str) -> None:
@@ -246,6 +278,7 @@ def main() -> int:
     parser.add_argument("target", nargs="?", choices=["fairygui", "loxodon", "r3", "all"], help="要同步的依赖")
     parser.add_argument("--ref", default=None, help="FairyGUI 分支/提交，或 Loxodon tag（默认 master / v2.6.7）")
     parser.add_argument("--r3-version", default=None, help="R3 NuGet 版本（默认 1.3.0）")
+    parser.add_argument("--r3-upm-version", default="1.3.1", help="R3 Unity 适配层版本（默认 1.3.1）")
     parser.add_argument("--list", action="store_true", help="列出同步目标")
     parser.add_argument("--check", action="store_true", help="仅检查上游地址可达性")
     args = parser.parse_args()
@@ -274,7 +307,7 @@ def main() -> int:
     if args.target in ("loxodon", "all"):
         sync_loxodon(ref_loxodon)
     if args.target in ("r3", "all"):
-        sync_r3(args.r3_version)
+        sync_r3(args.r3_version, args.r3_upm_version)
 
     print("同步完成，请回到 Unity 等待重新导入后检查编译结果。")
     return 0

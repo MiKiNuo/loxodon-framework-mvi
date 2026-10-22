@@ -32,11 +32,10 @@ https://github.com/MiKiNuo/loxodon-framework-mvi.git?path=/MVI/Assets/Scripts/MV
 
 | 依赖 | 版本 | 位置 | 说明 |
 |---|---|---|---|
-| R3 运行时 | 1.3.0 | `ThirdParty/R3/Plugins/` | 含 `R3.dll` 及 5 个 NuGet 依赖程序集 |
+| R3 运行时 | NuGet 1.3.0 | `ThirdParty/R3/Plugins/` | `R3.dll` 及 5 个 NuGet 依赖程序集 |
+| R3 Unity 适配层 | 1.3.1 | `ThirdParty/R3/Unity/` | 提供 `ObserveOnMainThread`、`UnityFrameProvider`、Triggers 等 |
 | Loxodon Framework 运行时 | 2.6.7 | `ThirdParty/Loxodon/` | 仅 `Framework` 与 `Log` 两个程序集 |
 | FairyGUI | 上游 master | `ThirdParty/FairyGUI/` | 运行时、编辑器与 Resources |
-
-R3 只使用核心运行时，不包含 `R3.Unity` 的 Unity 适配层（`Observable.EveryUpdate` 等）。本框架未使用这些 API。
 
 ## 不要重复安装
 
