@@ -219,6 +219,18 @@ def sync_loxodon(ref: str) -> None:
     print(f"  完成，共 {count} 个文件")
 
 
+# R3.Unity.asmdef 使用 overrideReferences + precompiledReferences，只认列表内的 DLL，
+# 看不到 Unity 内置版本，因此下列 6 个程序集必须全部随包提供。
+R3_NUGET = [
+    ("r3", "1.3.0", "lib/netstandard2.1/R3.dll"),
+    ("microsoft.bcl.asyncinterfaces", "6.0.0", "lib/netstandard2.1/Microsoft.Bcl.AsyncInterfaces.dll"),
+    ("microsoft.bcl.timeprovider", "8.0.0", "lib/netstandard2.0/Microsoft.Bcl.TimeProvider.dll"),
+    ("system.componentmodel.annotations", "5.0.0", "lib/netstandard2.1/System.ComponentModel.Annotations.dll"),
+    ("system.runtime.compilerservices.unsafe", "6.0.0", "lib/netstandard2.0/System.Runtime.CompilerServices.Unsafe.dll"),
+    ("system.threading.channels", "8.0.0", "lib/netstandard2.1/System.Threading.Channels.dll"),
+]
+
+
 def sync_r3(r3_version: str | None, upm_version: str) -> None:
     print(f"[R3] nuget={r3_version or '默认'} upm={upm_version}")
     target = THIRD_PARTY / R3_TARGET

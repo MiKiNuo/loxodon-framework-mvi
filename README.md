@@ -60,7 +60,7 @@ https://github.com/MiKiNuo/loxodon-framework-mvi.git
 - `Analyzers/`：源生成器（`MviMap` / `MviIgnore` 映射优化）
 - `ThirdParty/`：内置的 R3、Loxodon、FairyGUI
 
-不包含 Demo 与业务示例，示例场景请查看仓库的 `DevProject~/Assets/Samples/`。
+不包含 Demo 与业务示例，示例不在包内分发。
 
 ## 第三方同步
 
